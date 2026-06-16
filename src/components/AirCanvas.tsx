@@ -184,7 +184,7 @@ export default function AirCanvas() {
       recordChunksRef.current = [];
       rec.ondataavailable = (e) => { if (e.data.size > 0) recordChunksRef.current.push(e.data); };
       rec.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop());
+        stream.getTracks().forEach((t: MediaStreamTrack) => t.stop());
         const blob = new Blob(recordChunksRef.current, { type: "video/webm" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
