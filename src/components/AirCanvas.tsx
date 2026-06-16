@@ -32,13 +32,17 @@ type Stroke = {
   tool: "pen" | "eraser";
 };
 
-const PALETTE = ["#a78bfa", "#f0abfc", "#5eead4", "#fde047", "#fb923c", "#f87171", "#ffffff"];
+// White / black + 1 primary accent (electric coral)
+const PRIMARY = "#FF4D2E";
+const PALETTE = ["#111111", PRIMARY, "#ffffff", "#9ca3af"];
 
 export default function AirCanvas() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const drawRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const cursorRef = useRef<HTMLDivElement>(null);
+  const dwellRingRef = useRef<HTMLDivElement>(null);
 
   const strokesRef = useRef<Stroke[]>([]);
   const redoRef = useRef<Stroke[]>([]);
@@ -46,12 +50,18 @@ export default function AirCanvas() {
   const smoothBufRef = useRef<Pt[]>([]);
   const lastEmitRef = useRef<Pt | null>(null);
 
-  const colorRef = useRef("#a78bfa");
+  const colorRef = useRef<string>(PRIMARY);
   const sizeRef = useRef(6);
   const toolRef = useRef<"pen" | "eraser">("pen");
   const drawingEnabledRef = useRef(true);
 
-  const [color, setColor] = useState("#a78bfa");
+  // Hand-click state (refs to avoid re-renders inside the tracking loop)
+  const pinchPrevRef = useRef(false);
+  const hoverTargetRef = useRef<HTMLElement | null>(null);
+  const dwellStartRef = useRef<number>(0);
+  const lastClickAtRef = useRef<number>(0);
+
+  const [color, setColor] = useState<string>(PRIMARY);
   const [size, setSize] = useState(6);
   const [tool, setTool] = useState<"pen" | "eraser">("pen");
   const [status, setStatus] = useState("Loading hand tracking…");
@@ -88,7 +98,7 @@ export default function AirCanvas() {
       ctx.lineWidth = s.size;
       if (s.tool === "pen") {
         ctx.shadowColor = s.color;
-        ctx.shadowBlur = 10;
+        ctx.shadowBlur = 8;
       } else {
         ctx.shadowBlur = 0;
       }
@@ -101,7 +111,6 @@ export default function AirCanvas() {
         continue;
       }
 
-      // Catmull-Rom -> Bezier for smooth curves
       ctx.beginPath();
       ctx.moveTo(s.points[0].x, s.points[0].y);
       const pts = s.points;
@@ -158,28 +167,23 @@ export default function AirCanvas() {
     out.width = c.width;
     out.height = c.height;
     const ctx = out.getContext("2d")!;
-    ctx.fillStyle = "#0a0a0f";
+    ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, out.width, out.height);
     ctx.drawImage(c, 0, 0);
     const a = document.createElement("a");
     a.href = out.toDataURL("image/png");
-    a.download = `aircanvas-${Date.now()}.png`;
+    a.download = `airwrite-${Date.now()}.png`;
     a.click();
   }, []);
 
   const toggleRecord = useCallback(async () => {
-    if (recording) {
-      recorderRef.current?.stop();
-      return;
-    }
+    if (recording) { recorderRef.current?.stop(); return; }
     try {
       const stream = await (navigator.mediaDevices as any).getDisplayMedia({
-        video: { frameRate: 30 },
-        audio: false,
+        video: { frameRate: 30 }, audio: false,
       });
       const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
-        ? "video/webm;codecs=vp9"
-        : "video/webm";
+        ? "video/webm;codecs=vp9" : "video/webm";
       const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000 });
       recordChunksRef.current = [];
       rec.ondataavailable = (e) => { if (e.data.size > 0) recordChunksRef.current.push(e.data); };
@@ -189,7 +193,7 @@ export default function AirCanvas() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `aircanvas-${Date.now()}.webm`;
+        a.download = `airwrite-${Date.now()}.webm`;
         a.click();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
         setRecording(false);
@@ -198,10 +202,7 @@ export default function AirCanvas() {
       recorderRef.current = rec;
       rec.start();
       setRecording(true);
-    } catch (e) {
-      console.error(e);
-      setRecording(false);
-    }
+    } catch (e) { console.error(e); setRecording(false); }
   }, [recording]);
 
   useEffect(() => {
@@ -215,34 +216,45 @@ export default function AirCanvas() {
       if (!cont || !drawRef.current || !overlayRef.current) return;
       const w = cont.clientWidth;
       const h = cont.clientHeight;
-      // Save & restore drawing on resize
       const old = document.createElement("canvas");
       old.width = drawRef.current.width;
       old.height = drawRef.current.height;
-      old.getContext("2d")!.drawImage(drawRef.current, 0, 0);
-
+      if (old.width && old.height) old.getContext("2d")!.drawImage(drawRef.current, 0, 0);
       drawRef.current.width = w; drawRef.current.height = h;
       overlayRef.current.width = w; overlayRef.current.height = h;
-      if (old.width && old.height) {
-        drawRef.current.getContext("2d")!.drawImage(old, 0, 0, w, h);
-      }
+      if (old.width && old.height) drawRef.current.getContext("2d")!.drawImage(old, 0, 0, w, h);
       redraw();
     };
+    const onResize = () => { cancelAnimationFrame(rafResize); rafResize = requestAnimationFrame(resize); };
 
-    const onResize = () => {
-      cancelAnimationFrame(rafResize);
-      rafResize = requestAnimationFrame(resize);
+    const findHandTarget = (x: number, y: number): HTMLElement | null => {
+      const els = document.elementsFromPoint(x, y);
+      for (const el of els) {
+        const t = (el as HTMLElement).closest?.("[data-hand-target]") as HTMLElement | null;
+        if (t) return t;
+      }
+      return null;
     };
 
     const onResults = (results: any) => {
       const overlay = overlayRef.current;
-      if (!overlay) return;
+      const cont = containerRef.current;
+      if (!overlay || !cont) return;
       const octx = overlay.getContext("2d")!;
       octx.clearRect(0, 0, overlay.width, overlay.height);
+
+      const cursor = cursorRef.current;
+      const dwellRing = dwellRingRef.current;
 
       if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
         setFingerState("idle");
         if (currentStrokeRef.current) { commitStroke(); redraw(); }
+        if (cursor) cursor.style.opacity = "0";
+        if (dwellRing) dwellRing.style.opacity = "0";
+        hoverTargetRef.current?.removeAttribute("data-hand-hover");
+        hoverTargetRef.current = null;
+        dwellStartRef.current = 0;
+        pinchPrevRef.current = false;
         return;
       }
 
@@ -254,21 +266,64 @@ export default function AirCanvas() {
       const tip = toPx(lm[8]);
       const pip = lm[6];
       const indexExtended = lm[8].y < pip.y - 0.02;
-
       const thumbTip = toPx(lm[4]);
       const pinchDist = Math.hypot(thumbTip.x - tip.x, thumbTip.y - tip.y);
       const refDist = Math.hypot(toPx(lm[0]).x - toPx(lm[5]).x, toPx(lm[0]).y - toPx(lm[5]).y);
       const pinching = pinchDist < refDist * 0.45;
 
-      const isDrawing = drawingEnabledRef.current && indexExtended && pinching;
-
-      // Rolling-average smoothing (last 5 points)
+      // Smoothed cursor
       const buf = smoothBufRef.current;
       buf.push(tip);
       if (buf.length > 5) buf.shift();
       const sx = buf.reduce((a, b) => a + b.x, 0) / buf.length;
       const sy = buf.reduce((a, b) => a + b.y, 0) / buf.length;
       const smoothed: Pt = { x: sx, y: sy };
+
+      // Convert to viewport coords (container fills viewport, so they match)
+      const rect = cont.getBoundingClientRect();
+      const vx = smoothed.x + rect.left;
+      const vy = smoothed.y + rect.top;
+
+      // Check UI hover via [data-hand-target]
+      const target = findHandTarget(vx, vy);
+      const prev = hoverTargetRef.current;
+      if (target !== prev) {
+        prev?.removeAttribute("data-hand-hover");
+        target?.setAttribute("data-hand-hover", "true");
+        hoverTargetRef.current = target;
+        dwellStartRef.current = target ? performance.now() : 0;
+      }
+
+      // Dwell-to-click (300ms hover over a target) OR pinch-to-click
+      const now = performance.now();
+      let clicked = false;
+      const DWELL_MS = 600;
+
+      if (target) {
+        const elapsed = now - dwellStartRef.current;
+        if (dwellRing) {
+          dwellRing.style.opacity = "1";
+          const pct = Math.min(1, elapsed / DWELL_MS);
+          dwellRing.style.background = `conic-gradient(${PRIMARY} ${pct * 360}deg, rgba(0,0,0,0.15) 0deg)`;
+        }
+        if (elapsed >= DWELL_MS && now - lastClickAtRef.current > 800) {
+          target.click();
+          lastClickAtRef.current = now;
+          dwellStartRef.current = now + 400; // small re-arm
+          clicked = true;
+        }
+        // Pinch instantly clicks too
+        if (pinching && !pinchPrevRef.current && now - lastClickAtRef.current > 400) {
+          target.click();
+          lastClickAtRef.current = now;
+          clicked = true;
+        }
+      } else {
+        if (dwellRing) dwellRing.style.opacity = "0";
+      }
+
+      // Drawing only when NOT over a UI target
+      const isDrawing = !target && drawingEnabledRef.current && indexExtended && pinching;
 
       if (isDrawing) {
         setFingerState("drawing");
@@ -282,45 +337,44 @@ export default function AirCanvas() {
           lastEmitRef.current = smoothed;
         } else {
           const last = lastEmitRef.current!;
-          const d = Math.hypot(last.x - smoothed.x, last.y - smoothed.y);
-          if (d > 1.5) {
+          if (Math.hypot(last.x - smoothed.x, last.y - smoothed.y) > 1.5) {
             currentStrokeRef.current.points.push(smoothed);
             lastEmitRef.current = smoothed;
           }
         }
         redraw();
       } else {
-        setFingerState(indexExtended ? "hover" : "idle");
+        setFingerState(target ? "hover" : indexExtended ? "hover" : "idle");
         if (currentStrokeRef.current) { commitStroke(); redraw(); }
       }
 
-      // Cursor overlay
-      octx.save();
-      const isEraser = toolRef.current === "eraser";
-      const cursorColor = isEraser ? "#ffffff" : (isDrawing ? colorRef.current : "#ffffff");
-      const r = isEraser ? sizeRef.current * 1.5 : (isDrawing ? sizeRef.current + 4 : 8);
-      octx.shadowColor = cursorColor;
-      octx.shadowBlur = isEraser ? 0 : 22;
-      octx.fillStyle = isEraser ? "rgba(255,255,255,0.1)" : cursorColor;
-      octx.beginPath();
-      octx.arc(smoothed.x, smoothed.y, r, 0, Math.PI * 2);
-      octx.fill();
-      octx.shadowBlur = 0;
-      octx.strokeStyle = "rgba(255,255,255,0.9)";
-      octx.lineWidth = 1.5;
-      octx.beginPath();
-      octx.arc(smoothed.x, smoothed.y, r + 10, 0, Math.PI * 2);
-      octx.stroke();
+      pinchPrevRef.current = pinching;
+      void clicked;
 
-      if (pinching) {
-        octx.strokeStyle = "rgba(255,255,255,0.5)";
+      // Visual cursor (DOM, sits above UI)
+      if (cursor) {
+        cursor.style.opacity = "1";
+        cursor.style.transform = `translate(${vx}px, ${vy}px) translate(-50%, -50%)`;
+        const isEraser = toolRef.current === "eraser";
+        const baseColor = target ? PRIMARY : isEraser ? "#111111" : isDrawing ? colorRef.current : "#111111";
+        cursor.style.background = pinching ? baseColor : "transparent";
+        cursor.style.borderColor = baseColor;
+      }
+      if (dwellRing) {
+        dwellRing.style.transform = `translate(${vx}px, ${vy}px) translate(-50%, -50%)`;
+      }
+
+      // Pinch line on overlay (draw context, not viewport)
+      if (pinching && !target) {
+        octx.save();
+        octx.strokeStyle = "rgba(17,17,17,0.45)";
         octx.lineWidth = 1;
         octx.beginPath();
         octx.moveTo(thumbTip.x, thumbTip.y);
         octx.lineTo(tip.x, tip.y);
         octx.stroke();
+        octx.restore();
       }
-      octx.restore();
     };
 
     (async () => {
@@ -344,16 +398,13 @@ export default function AirCanvas() {
 
         setStatus("Requesting camera…");
         camera = new window.Camera(videoRef.current!, {
-          onFrame: async () => {
-            if (videoRef.current) await hands.send({ image: videoRef.current });
-          },
-          width: 1280,
-          height: 720,
+          onFrame: async () => { if (videoRef.current) await hands.send({ image: videoRef.current }); },
+          width: 1280, height: 720,
         });
         await camera.start();
         if (cancelled) return;
         setReady(true);
-        setStatus("Pinch thumb + index to draw");
+        setStatus("Pinch to draw · hover a button to click");
       } catch (e: any) {
         console.error(e);
         setStatus(e?.message || "Camera/hand tracking failed");
@@ -368,16 +419,17 @@ export default function AirCanvas() {
     };
   }, [redraw, commitStroke]);
 
+  // Reusable button class (white surface, black text, primary accent on hover/active)
+  const btn = "rounded-lg border border-black/10 bg-white px-2.5 sm:px-3 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider text-black transition hover:border-[var(--aw-primary)] hover:text-[var(--aw-primary)] data-[hand-hover=true]:bg-[var(--aw-primary)] data-[hand-hover=true]:text-white data-[hand-hover=true]:border-[var(--aw-primary)]";
+
   return (
-    <div className="relative h-[100dvh] w-screen overflow-hidden bg-[#08080c] text-white select-none">
-      {/* Ambient gradient */}
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(1200px 600px at 20% 10%, rgba(124,90,240,0.18), transparent), radial-gradient(900px 500px at 90% 90%, rgba(224,90,240,0.14), transparent)",
-        }}
-      />
+    <div
+      className="relative h-[100dvh] w-screen overflow-hidden bg-white text-black select-none"
+      style={{ ["--aw-primary" as any]: PRIMARY }}
+    >
+      {/* Subtle paper noise */}
+      <div className="pointer-events-none absolute inset-0 opacity-[0.04]"
+        style={{ backgroundImage: "radial-gradient(#000 1px, transparent 1px)", backgroundSize: "3px 3px" }} />
 
       <div ref={containerRef} className="absolute inset-0">
         <video
@@ -393,58 +445,63 @@ export default function AirCanvas() {
 
       {/* Top bar */}
       <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2 px-2 w-[min(96vw,640px)]">
-        <div className="flex items-center justify-center gap-2 sm:gap-3 rounded-full border border-white/10 bg-black/40 px-3 sm:px-5 py-2 backdrop-blur-xl">
-          <div className={`h-2 w-2 shrink-0 rounded-full ${ready ? "bg-emerald-400 shadow-[0_0_10px_rgba(74,240,168,0.8)]" : "bg-amber-400 animate-pulse"}`} />
-          <span className="truncate text-[10px] sm:text-xs font-mono tracking-wide text-white/80">{status}</span>
-          <span className="hidden sm:block h-3 w-px bg-white/15" />
-          <span className={`hidden sm:inline text-xs font-mono shrink-0 ${fingerState === "drawing" ? "text-fuchsia-300" : fingerState === "hover" ? "text-white/70" : "text-white/40"}`}>
+        <div className="flex items-center justify-center gap-2 sm:gap-3 rounded-full border border-black/10 bg-white/85 px-3 sm:px-5 py-2 backdrop-blur-xl shadow-sm">
+          <div
+            className={`h-2 w-2 shrink-0 rounded-full ${ready ? "" : "animate-pulse"}`}
+            style={{ background: ready ? PRIMARY : "#000", boxShadow: ready ? `0 0 10px ${PRIMARY}` : "none" }}
+          />
+          <span className="truncate text-[10px] sm:text-xs font-mono tracking-wide text-black/80">{status}</span>
+          <span className="hidden sm:block h-3 w-px bg-black/15" />
+          <span className={`hidden sm:inline text-xs font-mono shrink-0 ${fingerState === "drawing" ? "" : fingerState === "hover" ? "text-black/70" : "text-black/40"}`}
+            style={fingerState === "drawing" ? { color: PRIMARY } : undefined}>
             {fingerState === "drawing" ? "● DRAWING" : fingerState === "hover" ? "○ HOVER" : "— IDLE"}
           </span>
         </div>
       </div>
 
-      {/* Title */}
+      {/* Brand */}
       <div className="absolute left-4 top-16 sm:left-6 sm:top-6 z-10">
-        <div className="font-mono text-[9px] sm:text-[10px] uppercase tracking-[0.3em] text-white/40">AirCanvas</div>
-        <div className="mt-1 font-serif text-lg sm:text-2xl italic text-white/90">draw the air.</div>
+        <div className="font-mono text-[9px] sm:text-[10px] uppercase tracking-[0.35em] text-black/40">a hand-tracked canvas</div>
+        <div className="mt-1 text-2xl sm:text-4xl font-black tracking-tight text-black">
+          air<span style={{ color: PRIMARY }}>write</span>
+          <span className="ml-1 inline-block h-2 w-2 align-baseline rounded-full" style={{ background: PRIMARY }} />
+        </div>
       </div>
 
       {/* Record indicator */}
       {recording && (
-        <div className="absolute right-4 top-16 sm:top-6 z-10 flex items-center gap-2 rounded-full border border-red-500/40 bg-red-500/20 px-3 py-1.5 backdrop-blur-xl">
-          <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
-          <span className="font-mono text-[10px] uppercase tracking-wider text-red-200">REC</span>
+        <div className="absolute right-4 top-16 sm:top-6 z-10 flex items-center gap-2 rounded-full border border-black/10 bg-white/85 px-3 py-1.5 backdrop-blur-xl">
+          <span className="h-2 w-2 rounded-full animate-pulse" style={{ background: PRIMARY }} />
+          <span className="font-mono text-[10px] uppercase tracking-wider" style={{ color: PRIMARY }}>REC</span>
         </div>
       )}
 
       {/* Panel toggle (mobile) */}
       <button
+        data-hand-target
         onClick={() => setPanelOpen((v) => !v)}
-        className="absolute bottom-3 right-3 z-20 sm:hidden rounded-full border border-white/15 bg-black/50 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-white backdrop-blur-xl"
+        className={`${btn} absolute bottom-3 right-3 z-20 sm:hidden`}
       >
         {panelOpen ? "Hide" : "Tools"}
       </button>
 
       {/* Bottom panel */}
       <div
-        className={`absolute bottom-3 sm:bottom-6 left-1/2 z-10 -translate-x-1/2 w-[min(96vw,920px)] transition-all duration-300 ${
+        className={`absolute bottom-3 sm:bottom-6 left-1/2 z-10 -translate-x-1/2 w-[min(96vw,960px)] transition-all duration-300 ${
           panelOpen ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6 pointer-events-none"
         }`}
       >
-        <div className="rounded-2xl border border-white/10 bg-black/50 px-3 sm:px-5 py-3 sm:py-4 backdrop-blur-xl shadow-2xl">
+        <div className="rounded-2xl border border-black/10 bg-white/90 px-3 sm:px-5 py-3 sm:py-4 backdrop-blur-xl shadow-xl">
           <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-3 sm:gap-x-4">
             {/* Tools */}
-            <div className="flex items-center gap-1 rounded-xl bg-white/5 p-1">
-              <button
-                onClick={() => setTool("pen")}
-                className={`rounded-lg px-3 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider transition ${tool === "pen" ? "bg-white/15 text-white" : "text-white/50 hover:text-white"}`}
-              >
+            <div className="flex items-center gap-1 rounded-xl bg-black/5 p-1">
+              <button data-hand-target onClick={() => setTool("pen")}
+                className={`rounded-lg px-3 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider transition ${tool === "pen" ? "text-white" : "text-black/60 hover:text-black"} data-[hand-hover=true]:ring-2`}
+                style={tool === "pen" ? { background: PRIMARY } : undefined}>
                 Pen
               </button>
-              <button
-                onClick={() => setTool("eraser")}
-                className={`rounded-lg px-3 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider transition ${tool === "eraser" ? "bg-white/15 text-white" : "text-white/50 hover:text-white"}`}
-              >
+              <button data-hand-target onClick={() => setTool("eraser")}
+                className={`rounded-lg px-3 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider transition ${tool === "eraser" ? "bg-black text-white" : "text-black/60 hover:text-black"} data-[hand-hover=true]:ring-2`}>
                 Eraser
               </button>
             </div>
@@ -454,11 +511,12 @@ export default function AirCanvas() {
               {PALETTE.map((c) => (
                 <button
                   key={c}
+                  data-hand-target
                   onClick={() => { setColor(c); setTool("pen"); }}
-                  className="relative h-6 w-6 sm:h-7 sm:w-7 rounded-full transition-transform hover:scale-110"
+                  className="relative h-6 w-6 sm:h-7 sm:w-7 rounded-full border border-black/10 transition-transform hover:scale-110 data-[hand-hover=true]:scale-125"
                   style={{
                     background: c,
-                    boxShadow: color === c && tool === "pen" ? `0 0 0 2px #0a0a0f, 0 0 0 4px ${c}, 0 0 18px ${c}` : `0 0 8px ${c}80`,
+                    boxShadow: color === c && tool === "pen" ? `0 0 0 2px #fff, 0 0 0 4px ${PRIMARY}` : "none",
                   }}
                   aria-label={`Color ${c}`}
                 />
@@ -467,38 +525,48 @@ export default function AirCanvas() {
 
             {/* Size */}
             <div className="flex items-center gap-2 sm:gap-3">
-              <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-wider text-white/50">size</span>
+              <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-wider text-black/50">size</span>
               <input
                 type="range" min={2} max={28} value={size}
                 onChange={(e) => setSize(parseInt(e.target.value))}
-                className="w-20 sm:w-28 accent-fuchsia-400"
+                className="w-20 sm:w-28"
+                style={{ accentColor: PRIMARY }}
               />
-              <span className="w-5 font-mono text-[10px] sm:text-xs text-white/70">{size}</span>
+              <span className="w-5 font-mono text-[10px] sm:text-xs text-black/70">{size}</span>
             </div>
 
-            {/* Camera opacity */}
+            {/* Cam */}
             <div className="flex items-center gap-2 sm:gap-3">
-              <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-wider text-white/50">cam</span>
+              <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-wider text-black/50">cam</span>
               <input
                 type="range" min={0} max={100} value={Math.round(camOpacity * 100)}
                 onChange={(e) => setCamOpacity(parseInt(e.target.value) / 100)}
-                className="w-20 sm:w-24 accent-violet-400"
+                className="w-20 sm:w-24"
+                style={{ accentColor: PRIMARY }}
               />
             </div>
 
             {/* Actions */}
             <div className="flex flex-wrap items-center justify-center gap-2">
-              <button onClick={() => setDrawingEnabled((v) => !v)}
-                className={`rounded-lg px-2.5 sm:px-3 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider transition ${drawingEnabled ? "bg-white/10 text-white hover:bg-white/20" : "bg-amber-500/20 text-amber-200 hover:bg-amber-500/30"}`}>
+              <button data-hand-target onClick={() => setDrawingEnabled((v) => !v)} className={btn}>
                 {drawingEnabled ? "Pause" : "Resume"}
               </button>
-              <button onClick={undo} className="rounded-lg bg-white/10 px-2.5 sm:px-3 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider text-white hover:bg-white/20">Undo</button>
-              <button onClick={redo} className="rounded-lg bg-white/10 px-2.5 sm:px-3 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider text-white hover:bg-white/20">Redo</button>
-              <button onClick={clearAll} className="rounded-lg bg-white/10 px-2.5 sm:px-3 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider text-white hover:bg-white/20">Clear</button>
-              <button onClick={save} className="rounded-lg bg-gradient-to-r from-violet-500 to-fuchsia-500 px-3 sm:px-4 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider text-white shadow-lg shadow-fuchsia-500/30 hover:brightness-110">Save PNG</button>
+              <button data-hand-target onClick={undo} className={btn}>Undo</button>
+              <button data-hand-target onClick={redo} className={btn}>Redo</button>
+              <button data-hand-target onClick={clearAll} className={btn}>Clear</button>
               <button
+                data-hand-target
+                onClick={save}
+                className="rounded-lg px-3 sm:px-4 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider text-white transition hover:brightness-110 data-[hand-hover=true]:brightness-110"
+                style={{ background: "#000" }}
+              >
+                Save PNG
+              </button>
+              <button
+                data-hand-target
                 onClick={toggleRecord}
-                className={`rounded-lg px-3 sm:px-4 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider text-white shadow-lg transition ${recording ? "bg-red-500 hover:bg-red-600 shadow-red-500/40" : "bg-gradient-to-r from-emerald-500 to-teal-500 hover:brightness-110 shadow-emerald-500/30"}`}
+                className="rounded-lg px-3 sm:px-4 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider text-white transition hover:brightness-110 data-[hand-hover=true]:brightness-110"
+                style={{ background: recording ? "#000" : PRIMARY }}
               >
                 {recording ? "Stop Rec" : "Record"}
               </button>
@@ -506,11 +574,20 @@ export default function AirCanvas() {
           </div>
         </div>
 
-        {/* Hint */}
-        <p className="mt-2 text-center font-mono text-[9px] sm:text-[10px] uppercase tracking-[0.3em] text-white/30">
-          pinch thumb + index • move to draw • open hand to lift
+        <p className="mt-2 text-center font-mono text-[9px] sm:text-[10px] uppercase tracking-[0.3em] text-black/40">
+          pinch to draw · hover a button to click · pinch on button = instant click
         </p>
       </div>
+
+      {/* Hand cursor (DOM, above everything) */}
+      <div ref={dwellRingRef}
+        className="pointer-events-none fixed left-0 top-0 z-50 h-12 w-12 rounded-full opacity-0 transition-opacity duration-150"
+        style={{ padding: 3, opacity: 0 }} />
+      <div
+        ref={cursorRef}
+        className="pointer-events-none fixed left-0 top-0 z-50 h-5 w-5 rounded-full border-2 opacity-0 transition-[opacity,background-color] duration-150"
+        style={{ borderColor: PRIMARY, background: "transparent", boxShadow: `0 0 0 3px rgba(255,255,255,0.7), 0 0 14px ${PRIMARY}80` }}
+      />
     </div>
   );
 }
