@@ -1,29 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
+import AirCanvas from "@/components/AirCanvas";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Your App" },
-      { name: "description", content: "Replace this with a one-sentence description of your app." },
-      { property: "og:title", content: "Your App" },
-      { property: "og:description", content: "Replace this with a one-sentence description of your app." },
+      { title: "AirCanvas — Draw with your hands" },
+      { name: "description", content: "Air-draw in real time using your webcam and hand tracking. Pinch your thumb and index finger to paint glowing strokes in space." },
+      { property: "og:title", content: "AirCanvas — Draw with your hands" },
+      { property: "og:description", content: "Air-draw in real time using your webcam and hand tracking." },
     ],
   }),
-  component: Index,
+  component: AirCanvas,
 });
-
-// IMPORTANT: Replace this placeholder. See ./README.md for routing conventions.
-function Index() {
-  return (
-    <div
-      className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#fcfbf8" }}
-    >
-      <img
-        data-lovable-blank-page-placeholder="REMOVE_THIS"
-        src="https://cdn.gpteng.co/blank-app-v1.svg"
-        alt="Your app will live here!"
-      />
-    </div>
-  );
-}
