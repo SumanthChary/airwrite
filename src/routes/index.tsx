@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import AirCanvas from "@/components/AirCanvas";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -10,20 +10,5 @@ export const Route = createFileRoute("/")({
       { property: "og:description", content: "Air-draw in real time using your webcam and hand tracking." },
     ],
   }),
-  component: Index,
+  component: AirCanvas,
 });
-
-function Index() {
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => { setMounted(true); }, []);
-  if (!mounted) {
-    return (
-      <div className="flex h-screen w-screen items-center justify-center bg-[#08080c] text-white/60 font-mono text-sm">
-        Booting AirCanvas…
-      </div>
-    );
-  }
-  // Dynamic import keeps MediaPipe out of SSR
-  const AirCanvas = require("@/components/AirCanvas").default;
-  return <AirCanvas />;
-}
