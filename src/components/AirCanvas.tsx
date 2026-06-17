@@ -58,6 +58,7 @@ export default function AirCanvas() {
   const redoRef = useRef<Stroke[]>([]);
   const currentStrokeRef = useRef<Stroke | null>(null);
   const smoothBufRef = useRef<Pt[]>([]);
+  const smoothPosRef = useRef<Pt | null>(null);
   const lastEmitRef = useRef<Pt | null>(null);
 
   const colorRef = useRef<string>(PRIMARY);
