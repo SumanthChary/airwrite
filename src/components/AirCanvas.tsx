@@ -751,5 +751,6 @@ export default function AirCanvas() {
           box-shadow: 0 8px 24px ${PRIMARY}40;
         }
       `}</style>
+    </div>
   );
 }
