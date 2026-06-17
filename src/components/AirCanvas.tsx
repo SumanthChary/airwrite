@@ -58,6 +58,7 @@ export default function AirCanvas() {
   const redoRef = useRef<Stroke[]>([]);
   const currentStrokeRef = useRef<Stroke | null>(null);
   const smoothBufRef = useRef<Pt[]>([]);
+  const smoothPosRef = useRef<Pt | null>(null);
   const lastEmitRef = useRef<Pt | null>(null);
 
   const colorRef = useRef<string>(PRIMARY);
@@ -272,6 +273,7 @@ export default function AirCanvas() {
         hoverTargetRef.current = null;
         dwellStartRef.current = 0;
         pinchPrevRef.current = false;
+        smoothPosRef.current = null;
         return;
       }
 
@@ -288,12 +290,15 @@ export default function AirCanvas() {
       const refDist = Math.hypot(toPx(lm[0]).x - toPx(lm[5]).x, toPx(lm[0]).y - toPx(lm[5]).y);
       const pinching = pinchDist < refDist * 0.45;
 
-      const buf = smoothBufRef.current;
-      buf.push(tip);
-      if (buf.length > 5) buf.shift();
-      const sx = buf.reduce((a, b) => a + b.x, 0) / buf.length;
-      const sy = buf.reduce((a, b) => a + b.y, 0) / buf.length;
-      const smoothed: Pt = { x: sx, y: sy };
+      // Adaptive EMA: snappy when moving fast, calm when still (One-Euro-ish).
+      const prevPos = smoothPosRef.current ?? tip;
+      const speed = Math.hypot(tip.x - prevPos.x, tip.y - prevPos.y);
+      const alpha = Math.min(0.65, 0.18 + speed / 90); // 0.18 still → ~0.65 fast
+      const smoothed: Pt = {
+        x: prevPos.x + (tip.x - prevPos.x) * alpha,
+        y: prevPos.y + (tip.y - prevPos.y) * alpha,
+      };
+      smoothPosRef.current = smoothed;
 
       const rect = cont.getBoundingClientRect();
       const vx = smoothed.x + rect.left;
@@ -360,14 +365,16 @@ export default function AirCanvas() {
 
       if (cursor) {
         cursor.style.opacity = "1";
-        cursor.style.transform = `translate(${vx}px, ${vy}px) translate(-50%, -50%)`;
-        const isEraser = toolRef.current === "eraser";
-        const baseColor = target ? PRIMARY : isEraser ? "#111111" : isDrawing ? colorRef.current : "#111111";
-        cursor.style.background = pinching ? baseColor : "transparent";
-        cursor.style.borderColor = baseColor;
+        cursor.style.transform = `translate3d(${vx}px, ${vy}px, 0) translate(-50%, -50%)`;
+        const mode = target ? "hand" : toolRef.current === "eraser" ? "eraser" : "pen";
+        if (cursor.dataset.mode !== mode) cursor.dataset.mode = mode;
+        const tint = target ? PRIMARY : toolRef.current === "eraser" ? "#111111" : colorRef.current;
+        cursor.style.setProperty("--cursor-tint", tint);
+        cursor.dataset.pinch = pinching ? "1" : "0";
+        cursor.dataset.drawing = isDrawing ? "1" : "0";
       }
       if (dwellRing) {
-        dwellRing.style.transform = `translate(${vx}px, ${vy}px) translate(-50%, -50%)`;
+        dwellRing.style.transform = `translate3d(${vx}px, ${vy}px, 0) translate(-50%, -50%)`;
       }
 
       if (pinching && !target) {
@@ -665,15 +672,85 @@ export default function AirCanvas() {
         </p>
       </div>
 
-      {/* Hand cursor (DOM, above everything) */}
+      {/* Dwell ring (fills when hovering a button) */}
       <div ref={dwellRingRef}
-        className="pointer-events-none fixed left-0 top-0 z-50 h-12 w-12 rounded-full opacity-0 transition-opacity duration-150"
-        style={{ padding: 3, opacity: 0 }} />
+        className="pointer-events-none fixed left-0 top-0 z-[60] h-12 w-12 rounded-full opacity-0"
+        style={{ padding: 3, opacity: 0, transition: "opacity 150ms ease, transform 60ms linear" }} />
+
+      {/* Air cursor — morphs between pen and hand */}
       <div
         ref={cursorRef}
-        className="pointer-events-none fixed left-0 top-0 z-50 h-5 w-5 rounded-full border-2 opacity-0 transition-[opacity,background-color] duration-150"
-        style={{ borderColor: PRIMARY, background: "transparent", boxShadow: `0 0 0 3px rgba(255,255,255,0.7), 0 0 14px ${PRIMARY}80` }}
-      />
+        data-mode="pen"
+        data-pinch="0"
+        data-drawing="0"
+        className="air-cursor pointer-events-none fixed left-0 top-0 z-[60] opacity-0"
+      >
+        {/* Pen icon */}
+        <svg className="air-cursor-pen" width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden>
+          <defs>
+            <filter id="aw-pen-shadow" x="-20%" y="-20%" width="140%" height="140%">
+              <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" floodColor="#000" floodOpacity="0.25"/>
+            </filter>
+          </defs>
+          <g filter="url(#aw-pen-shadow)">
+            {/* nib */}
+            <circle cx="10" cy="30" r="2.6" fill="var(--cursor-tint)" />
+            {/* body */}
+            <path d="M12 28 L28 12 L33 17 L17 33 Z" fill="#fff" stroke="#111" strokeWidth="1.4" strokeLinejoin="round"/>
+            {/* tip line */}
+            <path d="M12 28 L17 33" stroke="var(--cursor-tint)" strokeWidth="2" strokeLinecap="round"/>
+            {/* cap */}
+            <rect x="27" y="9" width="8" height="6" rx="1.2" transform="rotate(45 31 12)" fill="var(--cursor-tint)" stroke="#111" strokeWidth="1.2"/>
+          </g>
+        </svg>
+        {/* Hand (pointer) icon */}
+        <svg className="air-cursor-hand" width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden>
+          <g filter="url(#aw-pen-shadow)">
+            <path d="M9 11V5.5a1.5 1.5 0 0 1 3 0V11" fill="#fff" stroke="#111" strokeWidth="1.2" strokeLinejoin="round"/>
+            <path d="M12 11V4.5a1.5 1.5 0 0 1 3 0V11" fill="#fff" stroke="#111" strokeWidth="1.2" strokeLinejoin="round"/>
+            <path d="M15 11V6a1.5 1.5 0 0 1 3 0v8c0 3.9-2.6 7-7 7-2.6 0-4.6-1.2-5.8-3.4L3 14c-.6-1.1.6-2.2 1.6-1.6L7 14V6a1.5 1.5 0 0 1 3 0v5" fill="#fff" stroke="#111" strokeWidth="1.2" strokeLinejoin="round"/>
+          </g>
+        </svg>
+        {/* Pinch ring (dot when pinching) */}
+        <span className="air-cursor-dot" />
+      </div>
+
+      <style>{`
+        .air-cursor {
+          width: 40px; height: 40px;
+          --cursor-tint: ${PRIMARY};
+          transition: opacity 150ms ease;
+          will-change: transform;
+        }
+        .air-cursor svg {
+          position: absolute; inset: 0;
+          transition: opacity 180ms ease, transform 180ms cubic-bezier(.2,.8,.2,1);
+          transform-origin: 50% 50%;
+        }
+        .air-cursor .air-cursor-pen { opacity: 1; transform: rotate(0deg) scale(1); }
+        .air-cursor .air-cursor-hand { opacity: 0; transform: scale(.75); }
+        .air-cursor[data-mode="hand"] .air-cursor-pen { opacity: 0; transform: scale(.75) rotate(-12deg); }
+        .air-cursor[data-mode="hand"] .air-cursor-hand { opacity: 1; transform: scale(1); }
+        .air-cursor[data-mode="eraser"] .air-cursor-pen { filter: grayscale(1) brightness(.7); }
+        .air-cursor[data-pinch="1"] svg { transform: scale(.88); }
+        .air-cursor[data-mode="hand"][data-pinch="1"] .air-cursor-hand { transform: scale(.82); }
+        .air-cursor-dot {
+          position: absolute; left: 50%; top: 50%;
+          width: 10px; height: 10px; border-radius: 9999px;
+          background: var(--cursor-tint);
+          transform: translate(-50%,-50%) scale(0);
+          opacity: 0;
+          box-shadow: 0 0 0 3px rgba(255,255,255,.85), 0 0 14px var(--cursor-tint);
+          transition: transform 160ms cubic-bezier(.2,.8,.2,1), opacity 160ms ease;
+          pointer-events: none;
+        }
+        .air-cursor[data-drawing="1"] .air-cursor-dot { transform: translate(-50%,-50%) scale(1); opacity: 1; }
+        [data-hand-target][data-hand-hover="true"] {
+          transform: translateY(-1px) scale(1.04);
+          transition: transform 180ms cubic-bezier(.2,.8,.2,1), box-shadow 180ms ease, background-color 180ms ease, color 180ms ease;
+          box-shadow: 0 8px 24px ${PRIMARY}40;
+        }
+      `}</style>
     </div>
   );
 }
