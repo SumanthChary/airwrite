@@ -672,15 +672,84 @@ export default function AirCanvas() {
         </p>
       </div>
 
-      {/* Hand cursor (DOM, above everything) */}
+      {/* Dwell ring (fills when hovering a button) */}
       <div ref={dwellRingRef}
-        className="pointer-events-none fixed left-0 top-0 z-50 h-12 w-12 rounded-full opacity-0 transition-opacity duration-150"
-        style={{ padding: 3, opacity: 0 }} />
+        className="pointer-events-none fixed left-0 top-0 z-[60] h-12 w-12 rounded-full opacity-0"
+        style={{ padding: 3, opacity: 0, transition: "opacity 150ms ease, transform 60ms linear" }} />
+
+      {/* Air cursor — morphs between pen and hand */}
       <div
         ref={cursorRef}
-        className="pointer-events-none fixed left-0 top-0 z-50 h-5 w-5 rounded-full border-2 opacity-0 transition-[opacity,background-color] duration-150"
-        style={{ borderColor: PRIMARY, background: "transparent", boxShadow: `0 0 0 3px rgba(255,255,255,0.7), 0 0 14px ${PRIMARY}80` }}
-      />
-    </div>
+        data-mode="pen"
+        data-pinch="0"
+        data-drawing="0"
+        className="air-cursor pointer-events-none fixed left-0 top-0 z-[60] opacity-0"
+      >
+        {/* Pen icon */}
+        <svg className="air-cursor-pen" width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden>
+          <defs>
+            <filter id="aw-pen-shadow" x="-20%" y="-20%" width="140%" height="140%">
+              <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" floodColor="#000" floodOpacity="0.25"/>
+            </filter>
+          </defs>
+          <g filter="url(#aw-pen-shadow)">
+            {/* nib */}
+            <circle cx="10" cy="30" r="2.6" fill="var(--cursor-tint)" />
+            {/* body */}
+            <path d="M12 28 L28 12 L33 17 L17 33 Z" fill="#fff" stroke="#111" strokeWidth="1.4" strokeLinejoin="round"/>
+            {/* tip line */}
+            <path d="M12 28 L17 33" stroke="var(--cursor-tint)" strokeWidth="2" strokeLinecap="round"/>
+            {/* cap */}
+            <rect x="27" y="9" width="8" height="6" rx="1.2" transform="rotate(45 31 12)" fill="var(--cursor-tint)" stroke="#111" strokeWidth="1.2"/>
+          </g>
+        </svg>
+        {/* Hand (pointer) icon */}
+        <svg className="air-cursor-hand" width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden>
+          <g filter="url(#aw-pen-shadow)">
+            <path d="M9 11V5.5a1.5 1.5 0 0 1 3 0V11" fill="#fff" stroke="#111" strokeWidth="1.2" strokeLinejoin="round"/>
+            <path d="M12 11V4.5a1.5 1.5 0 0 1 3 0V11" fill="#fff" stroke="#111" strokeWidth="1.2" strokeLinejoin="round"/>
+            <path d="M15 11V6a1.5 1.5 0 0 1 3 0v8c0 3.9-2.6 7-7 7-2.6 0-4.6-1.2-5.8-3.4L3 14c-.6-1.1.6-2.2 1.6-1.6L7 14V6a1.5 1.5 0 0 1 3 0v5" fill="#fff" stroke="#111" strokeWidth="1.2" strokeLinejoin="round"/>
+          </g>
+        </svg>
+        {/* Pinch ring (dot when pinching) */}
+        <span className="air-cursor-dot" />
+      </div>
+
+      <style>{`
+        .air-cursor {
+          width: 40px; height: 40px;
+          --cursor-tint: ${PRIMARY};
+          transition: opacity 150ms ease;
+          will-change: transform;
+        }
+        .air-cursor svg {
+          position: absolute; inset: 0;
+          transition: opacity 180ms ease, transform 180ms cubic-bezier(.2,.8,.2,1);
+          transform-origin: 50% 50%;
+        }
+        .air-cursor .air-cursor-pen { opacity: 1; transform: rotate(0deg) scale(1); }
+        .air-cursor .air-cursor-hand { opacity: 0; transform: scale(.75); }
+        .air-cursor[data-mode="hand"] .air-cursor-pen { opacity: 0; transform: scale(.75) rotate(-12deg); }
+        .air-cursor[data-mode="hand"] .air-cursor-hand { opacity: 1; transform: scale(1); }
+        .air-cursor[data-mode="eraser"] .air-cursor-pen { filter: grayscale(1) brightness(.7); }
+        .air-cursor[data-pinch="1"] svg { transform: scale(.88); }
+        .air-cursor[data-mode="hand"][data-pinch="1"] .air-cursor-hand { transform: scale(.82); }
+        .air-cursor-dot {
+          position: absolute; left: 50%; top: 50%;
+          width: 10px; height: 10px; border-radius: 9999px;
+          background: var(--cursor-tint);
+          transform: translate(-50%,-50%) scale(0);
+          opacity: 0;
+          box-shadow: 0 0 0 3px rgba(255,255,255,.85), 0 0 14px var(--cursor-tint);
+          transition: transform 160ms cubic-bezier(.2,.8,.2,1), opacity 160ms ease;
+          pointer-events: none;
+        }
+        .air-cursor[data-drawing="1"] .air-cursor-dot { transform: translate(-50%,-50%) scale(1); opacity: 1; }
+        [data-hand-target][data-hand-hover="true"] {
+          transform: translateY(-1px) scale(1.04);
+          transition: transform 180ms cubic-bezier(.2,.8,.2,1), box-shadow 180ms ease, background-color 180ms ease, color 180ms ease;
+          box-shadow: 0 8px 24px ${PRIMARY}40;
+        }
+      `}</style>
   );
 }
