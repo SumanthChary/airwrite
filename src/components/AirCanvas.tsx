@@ -77,10 +77,14 @@ export default function AirCanvas() {
   const [status, setStatus] = useState("Loading hand tracking…");
   const [ready, setReady] = useState(false);
   const [fingerState, setFingerState] = useState<"idle" | "drawing" | "hover">("idle");
-  const [camOpacity, setCamOpacity] = useState(0.55);
+  const [camOpacity, setCamOpacity] = useState(1);
   const [drawingEnabled, setDrawingEnabled] = useState(true);
   const [panelOpen, setPanelOpen] = useState(true);
   const [recording, setRecording] = useState(false);
+  const [started, setStarted] = useState(false);
+  const [camError, setCamError] = useState<string | null>(null);
+  const startingRef = useRef(false);
+  const cleanupRef = useRef<(() => void) | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
 
