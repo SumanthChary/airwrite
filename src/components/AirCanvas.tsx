@@ -364,14 +364,16 @@ export default function AirCanvas() {
 
       if (cursor) {
         cursor.style.opacity = "1";
-        cursor.style.transform = `translate(${vx}px, ${vy}px) translate(-50%, -50%)`;
-        const isEraser = toolRef.current === "eraser";
-        const baseColor = target ? PRIMARY : isEraser ? "#111111" : isDrawing ? colorRef.current : "#111111";
-        cursor.style.background = pinching ? baseColor : "transparent";
-        cursor.style.borderColor = baseColor;
+        cursor.style.transform = `translate3d(${vx}px, ${vy}px, 0) translate(-50%, -50%)`;
+        const mode = target ? "hand" : toolRef.current === "eraser" ? "eraser" : "pen";
+        if (cursor.dataset.mode !== mode) cursor.dataset.mode = mode;
+        const tint = target ? PRIMARY : toolRef.current === "eraser" ? "#111111" : colorRef.current;
+        cursor.style.setProperty("--cursor-tint", tint);
+        cursor.dataset.pinch = pinching ? "1" : "0";
+        cursor.dataset.drawing = isDrawing ? "1" : "0";
       }
       if (dwellRing) {
-        dwellRing.style.transform = `translate(${vx}px, ${vy}px) translate(-50%, -50%)`;
+        dwellRing.style.transform = `translate3d(${vx}px, ${vy}px, 0) translate(-50%, -50%)`;
       }
 
       if (pinching && !target) {
