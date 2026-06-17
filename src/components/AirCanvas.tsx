@@ -32,9 +32,19 @@ type Stroke = {
   tool: "pen" | "eraser";
 };
 
-// White / black + 1 primary accent (electric coral)
+// White / black + 1 primary accent (electric coral) + supporting hues
 const PRIMARY = "#FF4D2E";
-const PALETTE = ["#111111", PRIMARY, "#ffffff", "#9ca3af"];
+const PALETTE = [
+  "#111111", // ink
+  PRIMARY,   // electric coral
+  "#ffffff", // white
+  "#9ca3af", // gray
+  "#F5C518", // amber
+  "#22C55E", // green
+  "#3B82F6", // blue
+  "#8B5CF6", // violet
+  "#EC4899", // pink
+];
 
 export default function AirCanvas() {
   const videoRef = useRef<HTMLVideoElement>(null);
