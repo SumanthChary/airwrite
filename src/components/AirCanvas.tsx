@@ -219,10 +219,12 @@ export default function AirCanvas() {
     } catch (e) { console.error(e); setRecording(false); }
   }, [recording]);
 
+  // Stable callbacks the camera loop will use
+  const onResultsRef = useRef<(r: any) => void>(() => {});
+  const resizeRef = useRef<() => void>(() => {});
+
+  // Mount: preload MediaPipe scripts + handle resize. No camera permission yet.
   useEffect(() => {
-    let cancelled = false;
-    let camera: any;
-    let hands: any;
     let rafResize: number;
 
     const resize = () => {
@@ -239,6 +241,7 @@ export default function AirCanvas() {
       if (old.width && old.height) drawRef.current.getContext("2d")!.drawImage(old, 0, 0, w, h);
       redraw();
     };
+    resizeRef.current = resize;
     const onResize = () => { cancelAnimationFrame(rafResize); rafResize = requestAnimationFrame(resize); };
 
     const findHandTarget = (x: number, y: number): HTMLElement | null => {
@@ -250,7 +253,7 @@ export default function AirCanvas() {
       return null;
     };
 
-    const onResults = (results: any) => {
+    onResultsRef.current = (results: any) => {
       const overlay = overlayRef.current;
       const cont = containerRef.current;
       if (!overlay || !cont) return;
@@ -285,7 +288,6 @@ export default function AirCanvas() {
       const refDist = Math.hypot(toPx(lm[0]).x - toPx(lm[5]).x, toPx(lm[0]).y - toPx(lm[5]).y);
       const pinching = pinchDist < refDist * 0.45;
 
-      // Smoothed cursor
       const buf = smoothBufRef.current;
       buf.push(tip);
       if (buf.length > 5) buf.shift();
@@ -293,12 +295,10 @@ export default function AirCanvas() {
       const sy = buf.reduce((a, b) => a + b.y, 0) / buf.length;
       const smoothed: Pt = { x: sx, y: sy };
 
-      // Convert to viewport coords (container fills viewport, so they match)
       const rect = cont.getBoundingClientRect();
       const vx = smoothed.x + rect.left;
       const vy = smoothed.y + rect.top;
 
-      // Check UI hover via [data-hand-target]
       const target = findHandTarget(vx, vy);
       const prev = hoverTargetRef.current;
       if (target !== prev) {
@@ -308,9 +308,7 @@ export default function AirCanvas() {
         dwellStartRef.current = target ? performance.now() : 0;
       }
 
-      // Dwell-to-click (300ms hover over a target) OR pinch-to-click
       const now = performance.now();
-      let clicked = false;
       const DWELL_MS = 600;
 
       if (target) {
@@ -323,20 +321,16 @@ export default function AirCanvas() {
         if (elapsed >= DWELL_MS && now - lastClickAtRef.current > 800) {
           target.click();
           lastClickAtRef.current = now;
-          dwellStartRef.current = now + 400; // small re-arm
-          clicked = true;
+          dwellStartRef.current = now + 400;
         }
-        // Pinch instantly clicks too
         if (pinching && !pinchPrevRef.current && now - lastClickAtRef.current > 400) {
           target.click();
           lastClickAtRef.current = now;
-          clicked = true;
         }
       } else {
         if (dwellRing) dwellRing.style.opacity = "0";
       }
 
-      // Drawing only when NOT over a UI target
       const isDrawing = !target && drawingEnabledRef.current && indexExtended && pinching;
 
       if (isDrawing) {
@@ -363,9 +357,7 @@ export default function AirCanvas() {
       }
 
       pinchPrevRef.current = pinching;
-      void clicked;
 
-      // Visual cursor (DOM, sits above UI)
       if (cursor) {
         cursor.style.opacity = "1";
         cursor.style.transform = `translate(${vx}px, ${vy}px) translate(-50%, -50%)`;
@@ -378,7 +370,6 @@ export default function AirCanvas() {
         dwellRing.style.transform = `translate(${vx}px, ${vy}px) translate(-50%, -50%)`;
       }
 
-      // Pinch line on overlay (draw context, not viewport)
       if (pinching && !target) {
         octx.save();
         octx.strokeStyle = "rgba(17,17,17,0.45)";
@@ -391,47 +382,97 @@ export default function AirCanvas() {
       }
     };
 
+    resize();
+    window.addEventListener("resize", onResize);
+
+    // Preload MediaPipe in the background (no camera prompt yet).
     (async () => {
       try {
         for (const src of CDN_SCRIPTS) await loadScript(src);
-        if (cancelled) return;
-
-        resize();
-        window.addEventListener("resize", onResize);
-
-        hands = new window.Hands({
-          locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
-        });
-        hands.setOptions({
-          maxNumHands: 1,
-          modelComplexity: 0,
-          minDetectionConfidence: 0.6,
-          minTrackingConfidence: 0.6,
-        });
-        hands.onResults(onResults);
-
-        setStatus("Requesting camera…");
-        camera = new window.Camera(videoRef.current!, {
-          onFrame: async () => { if (videoRef.current) await hands.send({ image: videoRef.current }); },
-          width: 1280, height: 720,
-        });
-        await camera.start();
-        if (cancelled) return;
-        setReady(true);
-        setStatus("Pinch to draw · hover a button to click");
+        setStatus("Click “Enable Camera” to begin");
       } catch (e: any) {
+        setStatus("Failed to load hand-tracking scripts");
         console.error(e);
-        setStatus(e?.message || "Camera/hand tracking failed");
       }
     })();
 
     return () => {
-      cancelled = true;
       window.removeEventListener("resize", onResize);
-      try { camera?.stop?.(); } catch {}
-      try { hands?.close?.(); } catch {}
+      cleanupRef.current?.();
+      cleanupRef.current = null;
     };
   }, [redraw, commitStroke]);
+
+  // Triggered by an explicit user click — required for camera permission.
+  const startCamera = useCallback(async () => {
+    if (startingRef.current || started) return;
+    startingRef.current = true;
+    setCamError(null);
+    setStatus("Requesting camera…");
+    try {
+      if (!window.Hands || !window.Camera) {
+        for (const src of CDN_SCRIPTS) await loadScript(src);
+      }
+
+      // Prime the permission prompt directly from the user gesture.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        audio: false,
+      });
+      const video = videoRef.current!;
+      video.srcObject = stream;
+      await video.play().catch(() => {});
+
+      const hands = new window.Hands({
+        locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+      });
+      hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 0,
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6,
+      });
+      hands.onResults((r: any) => onResultsRef.current(r));
+
+      // Drive frames ourselves so we keep using the gesture-granted stream.
+      let stopped = false;
+      const loop = async () => {
+        if (stopped) return;
+        if (video.readyState >= 2) {
+          try { await hands.send({ image: video }); } catch {}
+        }
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+
+      cleanupRef.current = () => {
+        stopped = true;
+        try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+        try { hands.close?.(); } catch {}
+      };
+
+      setStarted(true);
+      setReady(true);
+      setStatus("Pinch to draw · hover a button to click");
+      // Ensure canvas matches container now that video is live.
+      requestAnimationFrame(() => resizeRef.current());
+    } catch (e: any) {
+      console.error(e);
+      const name = e?.name || "";
+      const msg =
+        name === "NotAllowedError"
+          ? "Camera permission was blocked. Allow it in your browser, then click Retry."
+          : name === "NotFoundError"
+          ? "No camera found on this device."
+          : name === "NotReadableError"
+          ? "Camera is in use by another app."
+          : e?.message || "Could not start the camera.";
+      setCamError(msg);
+      setStatus(msg);
+    } finally {
+      startingRef.current = false;
+    }
+  }, [started]);
 
   // Reusable button class (white surface, black text, primary accent on hover/active)
   const btn = "rounded-lg border border-black/10 bg-white px-2.5 sm:px-3 py-1.5 font-mono text-[10px] sm:text-xs uppercase tracking-wider text-black transition hover:border-[var(--aw-primary)] hover:text-[var(--aw-primary)] data-[hand-hover=true]:bg-[var(--aw-primary)] data-[hand-hover=true]:text-white data-[hand-hover=true]:border-[var(--aw-primary)]";
