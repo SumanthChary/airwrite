@@ -498,6 +498,37 @@ export default function AirCanvas() {
         <canvas ref={overlayRef} className="absolute inset-0 h-full w-full pointer-events-none" />
       </div>
 
+      {/* Start / permission overlay */}
+      {!started && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-white/70 backdrop-blur-md">
+          <div className="mx-4 max-w-md rounded-3xl border border-black/10 bg-white p-6 sm:p-8 text-center shadow-2xl">
+            <div className="font-mono text-[10px] uppercase tracking-[0.35em] text-black/40">airwrite</div>
+            <h2 className="mt-2 text-2xl sm:text-3xl font-black tracking-tight">
+              Write in the air with your <span style={{ color: PRIMARY }}>finger</span>
+            </h2>
+            <p className="mt-3 text-sm text-black/60">
+              We need your camera to track your hand. Nothing is uploaded — everything runs in your browser.
+            </p>
+            {camError && (
+              <p className="mt-3 rounded-lg bg-black/5 px-3 py-2 text-xs font-mono text-black/70">
+                {camError}
+              </p>
+            )}
+            <button
+              onClick={startCamera}
+              className="mt-5 w-full rounded-xl px-5 py-3 font-mono text-xs uppercase tracking-[0.2em] text-white transition hover:brightness-110"
+              style={{ background: PRIMARY, boxShadow: `0 8px 24px ${PRIMARY}55` }}
+            >
+              {camError ? "Retry camera" : "Enable camera"}
+            </button>
+            <p className="mt-3 text-[10px] font-mono uppercase tracking-wider text-black/40">
+              tip: pinch thumb + index to draw
+            </p>
+          </div>
+        </div>
+      )}
+
+
       {/* Top bar */}
       <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2 px-2 w-[min(96vw,640px)]">
         <div className="flex items-center justify-center gap-2 sm:gap-3 rounded-full border border-black/10 bg-white/85 px-3 sm:px-5 py-2 backdrop-blur-xl shadow-sm">
