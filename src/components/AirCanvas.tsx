@@ -283,17 +283,24 @@ export default function AirCanvas() {
       const toPx = (p: any) => ({ x: (1 - p.x) * W, y: p.y * H });
 
       const tip = toPx(lm[8]);
-      const pip = lm[6];
-      const indexExtended = lm[8].y < pip.y - 0.02;
-      const thumbTip = toPx(lm[4]);
-      const pinchDist = Math.hypot(thumbTip.x - tip.x, thumbTip.y - tip.y);
-      const refDist = Math.hypot(toPx(lm[0]).x - toPx(lm[5]).x, toPx(lm[0]).y - toPx(lm[5]).y);
-      const pinching = pinchDist < refDist * 0.45;
+      // Finger-extension test: tip is higher (smaller y) than the PIP joint.
+      const isExtended = (tipIdx: number, pipIdx: number) =>
+        lm[tipIdx].y < lm[pipIdx].y - 0.015;
+      const indexExtended = isExtended(8, 6);
+      const middleExtended = isExtended(12, 10);
+      const ringExtended = isExtended(16, 14);
+      const pinkyExtended = isExtended(20, 18);
+
+      // "Pointing" pose = index up, the other three folded → DRAW
+      // Open palm (all extended) → MOVE/HOVER only (no drawing)
+      // Fist (none extended) → IDLE
+      const pointing =
+        indexExtended && !middleExtended && !ringExtended && !pinkyExtended;
 
       // Adaptive EMA: snappy when moving fast, calm when still (One-Euro-ish).
       const prevPos = smoothPosRef.current ?? tip;
       const speed = Math.hypot(tip.x - prevPos.x, tip.y - prevPos.y);
-      const alpha = Math.min(0.65, 0.18 + speed / 90); // 0.18 still → ~0.65 fast
+      const alpha = Math.min(0.7, 0.2 + speed / 80);
       const smoothed: Pt = {
         x: prevPos.x + (tip.x - prevPos.x) * alpha,
         y: prevPos.y + (tip.y - prevPos.y) * alpha,
@@ -328,15 +335,12 @@ export default function AirCanvas() {
           lastClickAtRef.current = now;
           dwellStartRef.current = now + 400;
         }
-        if (pinching && !pinchPrevRef.current && now - lastClickAtRef.current > 400) {
-          target.click();
-          lastClickAtRef.current = now;
-        }
       } else {
         if (dwellRing) dwellRing.style.opacity = "0";
       }
 
-      const isDrawing = !target && drawingEnabledRef.current && indexExtended && pinching;
+      // Drawing = pointing pose, not over a UI target, drawing enabled
+      const isDrawing = !target && drawingEnabledRef.current && pointing;
 
       if (isDrawing) {
         setFingerState("drawing");
@@ -361,8 +365,6 @@ export default function AirCanvas() {
         if (currentStrokeRef.current) { commitStroke(); redraw(); }
       }
 
-      pinchPrevRef.current = pinching;
-
       if (cursor) {
         cursor.style.opacity = "1";
         cursor.style.transform = `translate3d(${vx}px, ${vy}px, 0) translate(-50%, -50%)`;
@@ -370,22 +372,11 @@ export default function AirCanvas() {
         if (cursor.dataset.mode !== mode) cursor.dataset.mode = mode;
         const tint = target ? PRIMARY : toolRef.current === "eraser" ? "#111111" : colorRef.current;
         cursor.style.setProperty("--cursor-tint", tint);
-        cursor.dataset.pinch = pinching ? "1" : "0";
+        cursor.dataset.pinch = isDrawing ? "1" : "0";
         cursor.dataset.drawing = isDrawing ? "1" : "0";
       }
       if (dwellRing) {
         dwellRing.style.transform = `translate3d(${vx}px, ${vy}px, 0) translate(-50%, -50%)`;
-      }
-
-      if (pinching && !target) {
-        octx.save();
-        octx.strokeStyle = "rgba(17,17,17,0.45)";
-        octx.lineWidth = 1;
-        octx.beginPath();
-        octx.moveTo(thumbTip.x, thumbTip.y);
-        octx.lineTo(tip.x, tip.y);
-        octx.stroke();
-        octx.restore();
       }
     };
 
