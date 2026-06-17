@@ -659,7 +659,7 @@ export default function AirCanvas() {
         </div>
 
         <p className="mt-2 text-center font-mono text-[9px] sm:text-[10px] uppercase tracking-[0.3em] text-black/40">
-          pinch to draw · hover a button to click · pinch on button = instant click
+          point index finger to draw · open palm to move · hover a button to click
         </p>
       </div>
 
