@@ -520,7 +520,7 @@ export default function AirCanvas() {
               {camError ? "Retry camera" : "Enable camera"}
             </button>
             <p className="mt-3 text-[10px] font-mono uppercase tracking-wider text-black/40">
-              tip: pinch thumb + index to draw
+              tip: point with your index finger to draw
             </p>
           </div>
         </div>
