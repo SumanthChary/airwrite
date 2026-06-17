@@ -289,12 +289,15 @@ export default function AirCanvas() {
       const refDist = Math.hypot(toPx(lm[0]).x - toPx(lm[5]).x, toPx(lm[0]).y - toPx(lm[5]).y);
       const pinching = pinchDist < refDist * 0.45;
 
-      const buf = smoothBufRef.current;
-      buf.push(tip);
-      if (buf.length > 5) buf.shift();
-      const sx = buf.reduce((a, b) => a + b.x, 0) / buf.length;
-      const sy = buf.reduce((a, b) => a + b.y, 0) / buf.length;
-      const smoothed: Pt = { x: sx, y: sy };
+      // Adaptive EMA: snappy when moving fast, calm when still (One-Euro-ish).
+      const prevPos = smoothPosRef.current ?? tip;
+      const speed = Math.hypot(tip.x - prevPos.x, tip.y - prevPos.y);
+      const alpha = Math.min(0.65, 0.18 + speed / 90); // 0.18 still → ~0.65 fast
+      const smoothed: Pt = {
+        x: prevPos.x + (tip.x - prevPos.x) * alpha,
+        y: prevPos.y + (tip.y - prevPos.y) * alpha,
+      };
+      smoothPosRef.current = smoothed;
 
       const rect = cont.getBoundingClientRect();
       const vx = smoothed.x + rect.left;
