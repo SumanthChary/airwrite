@@ -273,6 +273,7 @@ export default function AirCanvas() {
         hoverTargetRef.current = null;
         dwellStartRef.current = 0;
         pinchPrevRef.current = false;
+        smoothPosRef.current = null;
         return;
       }
 
