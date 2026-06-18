@@ -57,17 +57,21 @@ export default function AirCanvas() {
   const strokesRef = useRef<Stroke[]>([]);
   const redoRef = useRef<Stroke[]>([]);
   const currentStrokeRef = useRef<Stroke | null>(null);
-  const smoothBufRef = useRef<Pt[]>([]);
   const smoothPosRef = useRef<Pt | null>(null);
   const lastEmitRef = useRef<Pt | null>(null);
+
+  // One Euro filter state (per axis)
+  const oneEuroRef = useRef({
+    xPrev: 0, yPrev: 0, dxPrev: 0, dyPrev: 0, tPrev: 0, init: false,
+  });
 
   const colorRef = useRef<string>(PRIMARY);
   const sizeRef = useRef(6);
   const toolRef = useRef<"pen" | "eraser">("pen");
   const drawingEnabledRef = useRef(true);
+  const fingerStateRef = useRef<"idle" | "drawing" | "hover">("idle");
 
   // Hand-click state (refs to avoid re-renders inside the tracking loop)
-  const pinchPrevRef = useRef(false);
   const hoverTargetRef = useRef<HTMLElement | null>(null);
   const dwellStartRef = useRef<number>(0);
   const lastClickAtRef = useRef<number>(0);
@@ -89,10 +93,18 @@ export default function AirCanvas() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
 
+  const setFingerStateThrottled = useCallback((v: "idle" | "drawing" | "hover") => {
+    if (fingerStateRef.current !== v) {
+      fingerStateRef.current = v;
+      setFingerState(v);
+    }
+  }, []);
+
   useEffect(() => { colorRef.current = color; }, [color]);
   useEffect(() => { sizeRef.current = size; }, [size]);
   useEffect(() => { toolRef.current = tool; }, [tool]);
   useEffect(() => { drawingEnabledRef.current = drawingEnabled; }, [drawingEnabled]);
+
 
   const redraw = useCallback(() => {
     const c = drawRef.current;
