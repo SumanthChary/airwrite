@@ -1,28 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
-declare global {
-  interface Window {
-    Hands: any;
-    Camera: any;
-  }
-}
+// MediaPipe Tasks Vision (GPU-accelerated HandLandmarker) — successor to legacy @mediapipe/hands.
+// Loaded dynamically from the official CDN for best performance & WASM/GPU delegate support.
+const TASKS_VISION_VERSION = "0.10.14";
+const WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`;
+const MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 
-const CDN_SCRIPTS = [
-  "https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js",
-  "https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js",
-];
-
-function loadScript(src: string) {
-  return new Promise<void>((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) return resolve();
-    const s = document.createElement("script");
-    s.src = src;
-    s.crossOrigin = "anonymous";
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error(`Failed to load ${src}`));
-    document.head.appendChild(s);
-  });
-}
 
 type Pt = { x: number; y: number };
 type Stroke = {
