@@ -424,16 +424,16 @@ export default function AirCanvas() {
     resize();
     window.addEventListener("resize", onResize);
 
-    // Preload MediaPipe in the background (no camera prompt yet).
-    (async () => {
-      try {
-        for (const src of CDN_SCRIPTS) await loadScript(src);
-        setStatus("Click “Enable Camera” to begin");
-      } catch (e: any) {
-        setStatus("Failed to load hand-tracking scripts");
-        console.error(e);
-      }
-    })();
+    // Warm the model CDN connections in the background.
+    try {
+      const link = document.createElement("link");
+      link.rel = "preconnect";
+      link.href = "https://cdn.jsdelivr.net";
+      link.crossOrigin = "anonymous";
+      document.head.appendChild(link);
+    } catch {}
+    setStatus("Click “Enable Camera” to begin");
+
 
     return () => {
       window.removeEventListener("resize", onResize);
