@@ -449,10 +449,6 @@ export default function AirCanvas() {
     setCamError(null);
     setStatus("Requesting camera…");
     try {
-      if (!window.Hands || !window.Camera) {
-        for (const src of CDN_SCRIPTS) await loadScript(src);
-      }
-
       // Prime the permission prompt directly from the user gesture.
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
@@ -462,23 +458,44 @@ export default function AirCanvas() {
       video.srcObject = stream;
       await video.play().catch(() => {});
 
-      const hands = new window.Hands({
-        locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
-      });
-      hands.setOptions({
-        maxNumHands: 1,
-        modelComplexity: 0,
-        minDetectionConfidence: 0.6,
-        minTrackingConfidence: 0.6,
-      });
-      hands.onResults((r: any) => onResultsRef.current(r));
+      // Dynamic import of MediaPipe Tasks Vision (ESM via CDN) — GPU delegate for max smoothness.
+      const vision: any = await import(
+        /* @vite-ignore */ `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/vision_bundle.mjs`
+      );
+      const fileset = await vision.FilesetResolver.forVisionTasks(WASM_BASE);
+      let landmarker: any;
+      try {
+        landmarker = await vision.HandLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
+          runningMode: "VIDEO",
+          numHands: 1,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+      } catch {
+        // Fallback to CPU if GPU delegate unavailable (e.g. WebGL blocked)
+        landmarker = await vision.HandLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate: "CPU" },
+          runningMode: "VIDEO",
+          numHands: 1,
+        });
+      }
 
-      // Drive frames ourselves so we keep using the gesture-granted stream.
+      // Drive frames ourselves — detectForVideo is synchronous & fast.
       let stopped = false;
-      const loop = async () => {
+      let lastTs = -1;
+      const loop = () => {
         if (stopped) return;
         if (video.readyState >= 2) {
-          try { await hands.send({ image: video }); } catch {}
+          const ts = performance.now();
+          if (ts !== lastTs) {
+            lastTs = ts;
+            try {
+              const res = landmarker.detectForVideo(video, ts);
+              onResultsRef.current(res);
+            } catch {}
+          }
         }
         requestAnimationFrame(loop);
       };
@@ -487,14 +504,14 @@ export default function AirCanvas() {
       cleanupRef.current = () => {
         stopped = true;
         try { stream.getTracks().forEach((t) => t.stop()); } catch {}
-        try { hands.close?.(); } catch {}
+        try { landmarker.close?.(); } catch {}
       };
 
       setStarted(true);
       setReady(true);
-      setStatus("Pinch to draw · hover a button to click");
-      // Ensure canvas matches container now that video is live.
+      setStatus("Point with your index finger to draw · hover a button to click");
       requestAnimationFrame(() => resizeRef.current());
+
     } catch (e: any) {
       console.error(e);
       const name = e?.name || "";
