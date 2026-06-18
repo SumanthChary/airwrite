@@ -106,57 +106,84 @@ export default function AirCanvas() {
   useEffect(() => { drawingEnabledRef.current = drawingEnabled; }, [drawingEnabled]);
 
 
+  // Apply one stroke fully (used by full redraw on undo/clear/resize)
+  const drawStroke = (ctx: CanvasRenderingContext2D, s: Stroke) => {
+    if (s.points.length < 1) return;
+    ctx.globalCompositeOperation = s.tool === "eraser" ? "destination-out" : "source-over";
+    ctx.strokeStyle = s.color;
+    ctx.fillStyle = s.color;
+    ctx.lineWidth = s.size;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    const pts = s.points;
+    if (pts.length === 1) {
+      ctx.beginPath();
+      ctx.arc(pts[0].x, pts[0].y, s.size / 2, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2;
+      const my = (pts[i].y + pts[i + 1].y) / 2;
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+    }
+    const last = pts[pts.length - 1];
+    ctx.lineTo(last.x, last.y);
+    ctx.stroke();
+  };
+
+  // Full redraw (only when needed: undo / clear / resize)
   const redraw = useCallback(() => {
     const c = drawRef.current;
     if (!c) return;
     const ctx = c.getContext("2d")!;
     ctx.clearRect(0, 0, c.width, c.height);
+    for (const s of strokesRef.current) drawStroke(ctx, s);
+    if (currentStrokeRef.current) drawStroke(ctx, currentStrokeRef.current);
+    ctx.globalCompositeOperation = "source-over";
+  }, []);
+
+  // Incrementally append the latest segment of the in-progress stroke.
+  // Called per new sample while drawing — O(1), not O(N).
+  const drawIncrement = () => {
+    const s = currentStrokeRef.current;
+    const c = drawRef.current;
+    if (!s || !c) return;
+    const ctx = c.getContext("2d")!;
+    const pts = s.points;
+    const n = pts.length;
+    ctx.globalCompositeOperation = s.tool === "eraser" ? "destination-out" : "source-over";
+    ctx.strokeStyle = s.color;
+    ctx.fillStyle = s.color;
+    ctx.lineWidth = s.size;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-
-    const all = [...strokesRef.current];
-    if (currentStrokeRef.current) all.push(currentStrokeRef.current);
-
-    for (const s of all) {
-      if (s.points.length < 1) continue;
-      ctx.globalCompositeOperation = s.tool === "eraser" ? "destination-out" : "source-over";
-      ctx.strokeStyle = s.color;
-      ctx.fillStyle = s.color;
-      ctx.lineWidth = s.size;
-      if (s.tool === "pen") {
-        ctx.shadowColor = s.color;
-        ctx.shadowBlur = 8;
-      } else {
-        ctx.shadowBlur = 0;
-      }
-
-      if (s.points.length === 1) {
-        const p = s.points[0];
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, s.size / 2, 0, Math.PI * 2);
-        ctx.fill();
-        continue;
-      }
-
+    if (n === 1) {
       ctx.beginPath();
-      ctx.moveTo(s.points[0].x, s.points[0].y);
-      const pts = s.points;
-      for (let i = 0; i < pts.length - 1; i++) {
-        const p0 = pts[i - 1] || pts[i];
-        const p1 = pts[i];
-        const p2 = pts[i + 1];
-        const p3 = pts[i + 2] || p2;
-        const cp1x = p1.x + (p2.x - p0.x) / 6;
-        const cp1y = p1.y + (p2.y - p0.y) / 6;
-        const cp2x = p2.x - (p3.x - p1.x) / 6;
-        const cp2y = p2.y - (p3.y - p1.y) / 6;
-        ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
-      }
-      ctx.stroke();
+      ctx.arc(pts[0].x, pts[0].y, s.size / 2, 0, Math.PI * 2);
+      ctx.fill();
+      return;
     }
-    ctx.globalCompositeOperation = "source-over";
-    ctx.shadowBlur = 0;
-  }, []);
+    if (n === 2) {
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      ctx.lineTo(pts[1].x, pts[1].y);
+      ctx.stroke();
+      return;
+    }
+    // Quadratic between previous midpoint and current midpoint, control = pts[n-2]
+    const p0 = pts[n - 3];
+    const p1 = pts[n - 2];
+    const p2 = pts[n - 1];
+    const m0x = (p0.x + p1.x) / 2, m0y = (p0.y + p1.y) / 2;
+    const m1x = (p1.x + p2.x) / 2, m1y = (p1.y + p2.y) / 2;
+    ctx.beginPath();
+    ctx.moveTo(m0x, m0y);
+    ctx.quadraticCurveTo(p1.x, p1.y, m1x, m1y);
+    ctx.stroke();
+  };
 
   const commitStroke = useCallback(() => {
     if (currentStrokeRef.current && currentStrokeRef.current.points.length > 0) {
@@ -164,7 +191,6 @@ export default function AirCanvas() {
       redoRef.current = [];
     }
     currentStrokeRef.current = null;
-    smoothBufRef.current = [];
     lastEmitRef.current = null;
   }, []);
 
@@ -180,6 +206,7 @@ export default function AirCanvas() {
     if (s) redoRef.current.push(s);
     redraw();
   }, [redraw]);
+
 
   const redo = useCallback(() => {
     const s = redoRef.current.pop();
