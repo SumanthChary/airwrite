@@ -285,7 +285,8 @@ export default function AirCanvas() {
       const cursor = cursorRef.current;
       const dwellRing = dwellRingRef.current;
 
-      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+      const landmarksList = results.landmarks || results.multiHandLandmarks;
+      if (!landmarksList || landmarksList.length === 0) {
         setFingerStateThrottled("idle");
         if (currentStrokeRef.current) { commitStroke(); }
         if (cursor) cursor.style.opacity = "0";
@@ -298,7 +299,8 @@ export default function AirCanvas() {
         return;
       }
 
-      const lm = results.multiHandLandmarks[0];
+      const lm = landmarksList[0];
+
       const W = overlay.width;
       const H = overlay.height;
       const rawX = (1 - lm[8].x) * W;
