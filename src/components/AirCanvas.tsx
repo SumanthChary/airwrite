@@ -1,28 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
-declare global {
-  interface Window {
-    Hands: any;
-    Camera: any;
-  }
-}
+// MediaPipe Tasks Vision (GPU-accelerated HandLandmarker) — successor to legacy @mediapipe/hands.
+// Loaded dynamically from the official CDN for best performance & WASM/GPU delegate support.
+const TASKS_VISION_VERSION = "0.10.14";
+const WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`;
+const MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 
-const CDN_SCRIPTS = [
-  "https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js",
-  "https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js",
-];
-
-function loadScript(src: string) {
-  return new Promise<void>((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) return resolve();
-    const s = document.createElement("script");
-    s.src = src;
-    s.crossOrigin = "anonymous";
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error(`Failed to load ${src}`));
-    document.head.appendChild(s);
-  });
-}
 
 type Pt = { x: number; y: number };
 type Stroke = {
@@ -301,7 +285,8 @@ export default function AirCanvas() {
       const cursor = cursorRef.current;
       const dwellRing = dwellRingRef.current;
 
-      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+      const landmarksList = results.landmarks || results.multiHandLandmarks;
+      if (!landmarksList || landmarksList.length === 0) {
         setFingerStateThrottled("idle");
         if (currentStrokeRef.current) { commitStroke(); }
         if (cursor) cursor.style.opacity = "0";
@@ -314,7 +299,8 @@ export default function AirCanvas() {
         return;
       }
 
-      const lm = results.multiHandLandmarks[0];
+      const lm = landmarksList[0];
+
       const W = overlay.width;
       const H = overlay.height;
       const rawX = (1 - lm[8].x) * W;
@@ -438,16 +424,16 @@ export default function AirCanvas() {
     resize();
     window.addEventListener("resize", onResize);
 
-    // Preload MediaPipe in the background (no camera prompt yet).
-    (async () => {
-      try {
-        for (const src of CDN_SCRIPTS) await loadScript(src);
-        setStatus("Click “Enable Camera” to begin");
-      } catch (e: any) {
-        setStatus("Failed to load hand-tracking scripts");
-        console.error(e);
-      }
-    })();
+    // Warm the model CDN connections in the background.
+    try {
+      const link = document.createElement("link");
+      link.rel = "preconnect";
+      link.href = "https://cdn.jsdelivr.net";
+      link.crossOrigin = "anonymous";
+      document.head.appendChild(link);
+    } catch {}
+    setStatus("Click “Enable Camera” to begin");
+
 
     return () => {
       window.removeEventListener("resize", onResize);
@@ -463,10 +449,6 @@ export default function AirCanvas() {
     setCamError(null);
     setStatus("Requesting camera…");
     try {
-      if (!window.Hands || !window.Camera) {
-        for (const src of CDN_SCRIPTS) await loadScript(src);
-      }
-
       // Prime the permission prompt directly from the user gesture.
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
@@ -476,23 +458,44 @@ export default function AirCanvas() {
       video.srcObject = stream;
       await video.play().catch(() => {});
 
-      const hands = new window.Hands({
-        locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
-      });
-      hands.setOptions({
-        maxNumHands: 1,
-        modelComplexity: 0,
-        minDetectionConfidence: 0.6,
-        minTrackingConfidence: 0.6,
-      });
-      hands.onResults((r: any) => onResultsRef.current(r));
+      // Dynamic import of MediaPipe Tasks Vision (ESM via CDN) — GPU delegate for max smoothness.
+      const vision: any = await import(
+        /* @vite-ignore */ `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/vision_bundle.mjs`
+      );
+      const fileset = await vision.FilesetResolver.forVisionTasks(WASM_BASE);
+      let landmarker: any;
+      try {
+        landmarker = await vision.HandLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
+          runningMode: "VIDEO",
+          numHands: 1,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+      } catch {
+        // Fallback to CPU if GPU delegate unavailable (e.g. WebGL blocked)
+        landmarker = await vision.HandLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate: "CPU" },
+          runningMode: "VIDEO",
+          numHands: 1,
+        });
+      }
 
-      // Drive frames ourselves so we keep using the gesture-granted stream.
+      // Drive frames ourselves — detectForVideo is synchronous & fast.
       let stopped = false;
-      const loop = async () => {
+      let lastTs = -1;
+      const loop = () => {
         if (stopped) return;
         if (video.readyState >= 2) {
-          try { await hands.send({ image: video }); } catch {}
+          const ts = performance.now();
+          if (ts !== lastTs) {
+            lastTs = ts;
+            try {
+              const res = landmarker.detectForVideo(video, ts);
+              onResultsRef.current(res);
+            } catch {}
+          }
         }
         requestAnimationFrame(loop);
       };
@@ -501,14 +504,14 @@ export default function AirCanvas() {
       cleanupRef.current = () => {
         stopped = true;
         try { stream.getTracks().forEach((t) => t.stop()); } catch {}
-        try { hands.close?.(); } catch {}
+        try { landmarker.close?.(); } catch {}
       };
 
       setStarted(true);
       setReady(true);
-      setStatus("Pinch to draw · hover a button to click");
-      // Ensure canvas matches container now that video is live.
+      setStatus("Point with your index finger to draw · hover a button to click");
       requestAnimationFrame(() => resizeRef.current());
+
     } catch (e: any) {
       console.error(e);
       const name = e?.name || "";
