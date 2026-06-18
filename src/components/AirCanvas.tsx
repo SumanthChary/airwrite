@@ -297,31 +297,61 @@ export default function AirCanvas() {
       const overlay = overlayRef.current;
       const cont = containerRef.current;
       if (!overlay || !cont) return;
-      const octx = overlay.getContext("2d")!;
-      octx.clearRect(0, 0, overlay.width, overlay.height);
 
       const cursor = cursorRef.current;
       const dwellRing = dwellRingRef.current;
 
       if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
-        setFingerState("idle");
-        if (currentStrokeRef.current) { commitStroke(); redraw(); }
+        setFingerStateThrottled("idle");
+        if (currentStrokeRef.current) { commitStroke(); }
         if (cursor) cursor.style.opacity = "0";
         if (dwellRing) dwellRing.style.opacity = "0";
         hoverTargetRef.current?.removeAttribute("data-hand-hover");
         hoverTargetRef.current = null;
         dwellStartRef.current = 0;
-        pinchPrevRef.current = false;
         smoothPosRef.current = null;
+        oneEuroRef.current.init = false;
         return;
       }
 
       const lm = results.multiHandLandmarks[0];
       const W = overlay.width;
       const H = overlay.height;
-      const toPx = (p: any) => ({ x: (1 - p.x) * W, y: p.y * H });
+      const rawX = (1 - lm[8].x) * W;
+      const rawY = lm[8].y * H;
 
-      const tip = toPx(lm[8]);
+      // ---- One Euro Filter ----
+      const oe = oneEuroRef.current;
+      const now = performance.now();
+      let sx = rawX, sy = rawY;
+      if (!oe.init) {
+        oe.xPrev = rawX; oe.yPrev = rawY;
+        oe.dxPrev = 0; oe.dyPrev = 0;
+        oe.tPrev = now; oe.init = true;
+      } else {
+        const dt = Math.max(1, now - oe.tPrev) / 1000;
+        const minCutoff = 1.2, beta = 0.05, dCutoff = 1.0;
+        const alpha = (cutoff: number) => {
+          const r = 2 * Math.PI * cutoff * dt;
+          return r / (r + 1);
+        };
+        const dxRaw = (rawX - oe.xPrev) / dt;
+        const dyRaw = (rawY - oe.yPrev) / dt;
+        const ad = alpha(dCutoff);
+        const dx = oe.dxPrev + ad * (dxRaw - oe.dxPrev);
+        const dy = oe.dyPrev + ad * (dyRaw - oe.dyPrev);
+        const cutoffX = minCutoff + beta * Math.abs(dx);
+        const cutoffY = minCutoff + beta * Math.abs(dy);
+        const ax = alpha(cutoffX), ay = alpha(cutoffY);
+        sx = oe.xPrev + ax * (rawX - oe.xPrev);
+        sy = oe.yPrev + ay * (rawY - oe.yPrev);
+        oe.xPrev = sx; oe.yPrev = sy;
+        oe.dxPrev = dx; oe.dyPrev = dy;
+        oe.tPrev = now;
+      }
+      const smoothed: Pt = { x: sx, y: sy };
+      smoothPosRef.current = smoothed;
+
       // Finger-extension test: tip is higher (smaller y) than the PIP joint.
       const isExtended = (tipIdx: number, pipIdx: number) =>
         lm[tipIdx].y < lm[pipIdx].y - 0.015;
@@ -329,22 +359,8 @@ export default function AirCanvas() {
       const middleExtended = isExtended(12, 10);
       const ringExtended = isExtended(16, 14);
       const pinkyExtended = isExtended(20, 18);
-
-      // "Pointing" pose = index up, the other three folded → DRAW
-      // Open palm (all extended) → MOVE/HOVER only (no drawing)
-      // Fist (none extended) → IDLE
       const pointing =
         indexExtended && !middleExtended && !ringExtended && !pinkyExtended;
-
-      // Adaptive EMA: snappy when moving fast, calm when still (One-Euro-ish).
-      const prevPos = smoothPosRef.current ?? tip;
-      const speed = Math.hypot(tip.x - prevPos.x, tip.y - prevPos.y);
-      const alpha = Math.min(0.7, 0.2 + speed / 80);
-      const smoothed: Pt = {
-        x: prevPos.x + (tip.x - prevPos.x) * alpha,
-        y: prevPos.y + (tip.y - prevPos.y) * alpha,
-      };
-      smoothPosRef.current = smoothed;
 
       const rect = cont.getBoundingClientRect();
       const vx = smoothed.x + rect.left;
@@ -356,10 +372,9 @@ export default function AirCanvas() {
         prev?.removeAttribute("data-hand-hover");
         target?.setAttribute("data-hand-hover", "true");
         hoverTargetRef.current = target;
-        dwellStartRef.current = target ? performance.now() : 0;
+        dwellStartRef.current = target ? now : 0;
       }
 
-      const now = performance.now();
       const DWELL_MS = 600;
 
       if (target) {
@@ -378,11 +393,10 @@ export default function AirCanvas() {
         if (dwellRing) dwellRing.style.opacity = "0";
       }
 
-      // Drawing = pointing pose, not over a UI target, drawing enabled
       const isDrawing = !target && drawingEnabledRef.current && pointing;
 
       if (isDrawing) {
-        setFingerState("drawing");
+        setFingerStateThrottled("drawing");
         if (!currentStrokeRef.current) {
           currentStrokeRef.current = {
             points: [smoothed],
@@ -391,18 +405,20 @@ export default function AirCanvas() {
             tool: toolRef.current,
           };
           lastEmitRef.current = smoothed;
+          drawIncrement();
         } else {
           const last = lastEmitRef.current!;
-          if (Math.hypot(last.x - smoothed.x, last.y - smoothed.y) > 1.5) {
+          if (Math.hypot(last.x - smoothed.x, last.y - smoothed.y) > 1.2) {
             currentStrokeRef.current.points.push(smoothed);
             lastEmitRef.current = smoothed;
+            drawIncrement();
           }
         }
-        redraw();
       } else {
-        setFingerState(target ? "hover" : indexExtended ? "hover" : "idle");
-        if (currentStrokeRef.current) { commitStroke(); redraw(); }
+        setFingerStateThrottled(target ? "hover" : indexExtended ? "hover" : "idle");
+        if (currentStrokeRef.current) { commitStroke(); }
       }
+
 
       if (cursor) {
         cursor.style.opacity = "1";
