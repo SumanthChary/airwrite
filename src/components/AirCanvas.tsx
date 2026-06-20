@@ -41,7 +41,6 @@ export default function AirCanvas() {
   const strokesRef = useRef<Stroke[]>([]);
   const redoRef = useRef<Stroke[]>([]);
   const currentStrokeRef = useRef<Stroke | null>(null);
-  const smoothPosRef = useRef<Pt | null>(null);
   const lastEmitRef = useRef<Pt | null>(null);
 
   // One Euro filter state (per axis)
@@ -49,13 +48,24 @@ export default function AirCanvas() {
     xPrev: 0, yPrev: 0, dxPrev: 0, dyPrev: 0, tPrev: 0, init: false,
   });
 
+  // Target = latest tracked pos. Display = interpolated pos driving cursor & ink.
+  // Decouples camera FPS (~30) from monitor refresh (60-120Hz). This is the
+  // single biggest perceived-smoothness win.
+  const targetPosRef = useRef<Pt | null>(null);
+  const displayPosRef = useRef<Pt | null>(null);
+  const targetVelRef = useRef<Pt>({ x: 0, y: 0 });
+
+  // Pointing state from latest detection (read by display loop)
+  const pointingRef = useRef(false);
+  const indexExtRef = useRef(false);
+  const handPresentRef = useRef(false);
+
   const colorRef = useRef<string>(PRIMARY);
   const sizeRef = useRef(6);
   const toolRef = useRef<"pen" | "eraser">("pen");
   const drawingEnabledRef = useRef(true);
   const fingerStateRef = useRef<"idle" | "drawing" | "hover">("idle");
 
-  // Hand-click state (refs to avoid re-renders inside the tracking loop)
   const hoverTargetRef = useRef<HTMLElement | null>(null);
   const dwellStartRef = useRef<number>(0);
   const lastClickAtRef = useRef<number>(0);
