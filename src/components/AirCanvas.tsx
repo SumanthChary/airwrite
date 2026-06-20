@@ -260,6 +260,11 @@ export default function AirCanvas() {
   // Mount: preload MediaPipe scripts + handle resize. No camera permission yet.
   useEffect(() => {
     let rafResize: number;
+    let cachedRect: DOMRect | null = null;
+
+    const refreshRect = () => {
+      cachedRect = containerRef.current?.getBoundingClientRect() ?? null;
+    };
 
     const resize = () => {
       const cont = containerRef.current;
@@ -274,9 +279,11 @@ export default function AirCanvas() {
       overlayRef.current.width = w; overlayRef.current.height = h;
       if (old.width && old.height) drawRef.current.getContext("2d", { desynchronized: true, alpha: true })!.drawImage(old, 0, 0, w, h);
       redraw();
+      refreshRect();
     };
     resizeRef.current = resize;
     const onResize = () => { cancelAnimationFrame(rafResize); rafResize = requestAnimationFrame(resize); };
+    const onScroll = () => { refreshRect(); };
 
     const findHandTarget = (x: number, y: number): HTMLElement | null => {
       const els = document.elementsFromPoint(x, y);
