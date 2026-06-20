@@ -132,7 +132,7 @@ export default function AirCanvas() {
   const redraw = useCallback(() => {
     const c = drawRef.current;
     if (!c) return;
-    const ctx = c.getContext("2d")!;
+    const ctx = c.getContext("2d", { desynchronized: true, alpha: true })!;
     ctx.clearRect(0, 0, c.width, c.height);
     for (const s of strokesRef.current) drawStroke(ctx, s);
     if (currentStrokeRef.current) drawStroke(ctx, currentStrokeRef.current);
@@ -145,7 +145,7 @@ export default function AirCanvas() {
     const s = currentStrokeRef.current;
     const c = drawRef.current;
     if (!s || !c) return;
-    const ctx = c.getContext("2d")!;
+    const ctx = c.getContext("2d", { desynchronized: true, alpha: true })!;
     const pts = s.points;
     const n = pts.length;
     ctx.globalCompositeOperation = s.tool === "eraser" ? "destination-out" : "source-over";
@@ -272,7 +272,7 @@ export default function AirCanvas() {
       if (old.width && old.height) old.getContext("2d")!.drawImage(drawRef.current, 0, 0);
       drawRef.current.width = w; drawRef.current.height = h;
       overlayRef.current.width = w; overlayRef.current.height = h;
-      if (old.width && old.height) drawRef.current.getContext("2d")!.drawImage(old, 0, 0, w, h);
+      if (old.width && old.height) drawRef.current.getContext("2d", { desynchronized: true, alpha: true })!.drawImage(old, 0, 0, w, h);
       redraw();
     };
     resizeRef.current = resize;
