@@ -501,7 +501,9 @@ export default function AirCanvas() {
     requestAnimationFrame(renderLoop);
 
     resize();
+    refreshRect();
     window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onScroll, { passive: true });
 
     // Warm the model CDN connections in the background.
     try {
