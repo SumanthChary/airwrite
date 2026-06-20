@@ -69,6 +69,7 @@ export default function AirCanvas() {
   const hoverTargetRef = useRef<HTMLElement | null>(null);
   const dwellStartRef = useRef<number>(0);
   const lastClickAtRef = useRef<number>(0);
+  const hitTestAtRef = useRef<number>(0);
 
   const [color, setColor] = useState<string>(PRIMARY);
   const [size, setSize] = useState(6);
@@ -260,6 +261,11 @@ export default function AirCanvas() {
   // Mount: preload MediaPipe scripts + handle resize. No camera permission yet.
   useEffect(() => {
     let rafResize: number;
+    let cachedRect: DOMRect | null = null;
+
+    const refreshRect = () => {
+      cachedRect = containerRef.current?.getBoundingClientRect() ?? null;
+    };
 
     const resize = () => {
       const cont = containerRef.current;
@@ -274,9 +280,11 @@ export default function AirCanvas() {
       overlayRef.current.width = w; overlayRef.current.height = h;
       if (old.width && old.height) drawRef.current.getContext("2d", { desynchronized: true, alpha: true })!.drawImage(old, 0, 0, w, h);
       redraw();
+      refreshRect();
     };
     resizeRef.current = resize;
     const onResize = () => { cancelAnimationFrame(rafResize); rafResize = requestAnimationFrame(resize); };
+    const onScroll = () => { refreshRect(); };
 
     const findHandTarget = (x: number, y: number): HTMLElement | null => {
       const els = document.elementsFromPoint(x, y);
@@ -408,12 +416,18 @@ export default function AirCanvas() {
       const dispY = cur.y + (tgtY - cur.y) * lerp;
       displayPosRef.current = { x: dispX, y: dispY };
 
-      const rect = cont.getBoundingClientRect();
+      const rect = cachedRect ?? cont.getBoundingClientRect();
       const vx = dispX + rect.left;
       const vy = dispY + rect.top;
       const now = performance.now();
 
-      const hovered = findHandTarget(vx, vy);
+      // Hit-test is expensive (forces layout). Only run every ~50ms,
+      // or immediately when not currently drawing (so first hover lands fast).
+      let hovered = hoverTargetRef.current;
+      if (!currentStrokeRef.current || now - (hitTestAtRef.current || 0) > 50) {
+        hovered = findHandTarget(vx, vy);
+        hitTestAtRef.current = now;
+      }
       const prev = hoverTargetRef.current;
       if (hovered !== prev) {
         prev?.removeAttribute("data-hand-hover");
@@ -487,7 +501,9 @@ export default function AirCanvas() {
     requestAnimationFrame(renderLoop);
 
     resize();
+    refreshRect();
     window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onScroll, { passive: true });
 
     // Warm the model CDN connections in the background.
     try {
@@ -502,6 +518,7 @@ export default function AirCanvas() {
     return () => {
       stoppedRender = true;
       window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onScroll);
       cleanupRef.current?.();
       cleanupRef.current = null;
     };
@@ -515,8 +532,13 @@ export default function AirCanvas() {
     setStatus("Requesting camera…");
     try {
       // Prime the permission prompt directly from the user gesture.
+      // Lower res = dramatically faster inference. 640x360 is plenty for landmark accuracy.
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        video: {
+          width: { ideal: 640 }, height: { ideal: 360 },
+          frameRate: { ideal: 60, max: 60 },
+          facingMode: "user",
+        },
         audio: false,
       });
       const video = videoRef.current!;
@@ -547,24 +569,35 @@ export default function AirCanvas() {
         });
       }
 
-      // Drive frames ourselves — detectForVideo is synchronous & fast.
+      // Drive frames from rVFC when available — fires exactly once per new video frame,
+      // no wasted inference on duplicate frames. Falls back to rAF.
       let stopped = false;
-      let lastTs = -1;
-      const loop = () => {
-        if (stopped) return;
-        if (video.readyState >= 2) {
-          const ts = performance.now();
-          if (ts !== lastTs) {
-            lastTs = ts;
-            try {
-              const res = landmarker.detectForVideo(video, ts);
-              onResultsRef.current(res);
-            } catch {}
-          }
-        }
-        requestAnimationFrame(loop);
+      const runDetect = (tsMs: number) => {
+        try {
+          const res = landmarker.detectForVideo(video, tsMs);
+          onResultsRef.current(res);
+        } catch {}
       };
-      requestAnimationFrame(loop);
+      const vAny = video as any;
+      if (typeof vAny.requestVideoFrameCallback === "function") {
+        const onFrame = (_now: number, meta: any) => {
+          if (stopped) return;
+          runDetect(meta.mediaTime ? meta.mediaTime * 1000 : performance.now());
+          vAny.requestVideoFrameCallback(onFrame);
+        };
+        vAny.requestVideoFrameCallback(onFrame);
+      } else {
+        let lastTs = -1;
+        const loop = () => {
+          if (stopped) return;
+          if (video.readyState >= 2) {
+            const ts = video.currentTime * 1000;
+            if (ts !== lastTs) { lastTs = ts; runDetect(ts); }
+          }
+          requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+      }
 
       cleanupRef.current = () => {
         stopped = true;
