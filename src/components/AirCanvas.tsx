@@ -69,6 +69,7 @@ export default function AirCanvas() {
   const hoverTargetRef = useRef<HTMLElement | null>(null);
   const dwellStartRef = useRef<number>(0);
   const lastClickAtRef = useRef<number>(0);
+  const hitTestAtRef = useRef<number>(0);
 
   const [color, setColor] = useState<string>(PRIMARY);
   const [size, setSize] = useState(6);
