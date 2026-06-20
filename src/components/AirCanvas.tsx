@@ -518,6 +518,7 @@ export default function AirCanvas() {
     return () => {
       stoppedRender = true;
       window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onScroll);
       cleanupRef.current?.();
       cleanupRef.current = null;
     };
