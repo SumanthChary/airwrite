@@ -41,7 +41,6 @@ export default function AirCanvas() {
   const strokesRef = useRef<Stroke[]>([]);
   const redoRef = useRef<Stroke[]>([]);
   const currentStrokeRef = useRef<Stroke | null>(null);
-  const smoothPosRef = useRef<Pt | null>(null);
   const lastEmitRef = useRef<Pt | null>(null);
 
   // One Euro filter state (per axis)
@@ -49,13 +48,24 @@ export default function AirCanvas() {
     xPrev: 0, yPrev: 0, dxPrev: 0, dyPrev: 0, tPrev: 0, init: false,
   });
 
+  // Target = latest tracked pos. Display = interpolated pos driving cursor & ink.
+  // Decouples camera FPS (~30) from monitor refresh (60-120Hz). This is the
+  // single biggest perceived-smoothness win.
+  const targetPosRef = useRef<Pt | null>(null);
+  const displayPosRef = useRef<Pt | null>(null);
+  const targetVelRef = useRef<Pt>({ x: 0, y: 0 });
+
+  // Pointing state from latest detection (read by display loop)
+  const pointingRef = useRef(false);
+  const indexExtRef = useRef(false);
+  const handPresentRef = useRef(false);
+
   const colorRef = useRef<string>(PRIMARY);
   const sizeRef = useRef(6);
   const toolRef = useRef<"pen" | "eraser">("pen");
   const drawingEnabledRef = useRef(true);
   const fingerStateRef = useRef<"idle" | "drawing" | "hover">("idle");
 
-  // Hand-click state (refs to avoid re-renders inside the tracking loop)
   const hoverTargetRef = useRef<HTMLElement | null>(null);
   const dwellStartRef = useRef<number>(0);
   const lastClickAtRef = useRef<number>(0);
@@ -122,7 +132,7 @@ export default function AirCanvas() {
   const redraw = useCallback(() => {
     const c = drawRef.current;
     if (!c) return;
-    const ctx = c.getContext("2d")!;
+    const ctx = c.getContext("2d", { desynchronized: true, alpha: true })!;
     ctx.clearRect(0, 0, c.width, c.height);
     for (const s of strokesRef.current) drawStroke(ctx, s);
     if (currentStrokeRef.current) drawStroke(ctx, currentStrokeRef.current);
@@ -135,7 +145,7 @@ export default function AirCanvas() {
     const s = currentStrokeRef.current;
     const c = drawRef.current;
     if (!s || !c) return;
-    const ctx = c.getContext("2d")!;
+    const ctx = c.getContext("2d", { desynchronized: true, alpha: true })!;
     const pts = s.points;
     const n = pts.length;
     ctx.globalCompositeOperation = s.tool === "eraser" ? "destination-out" : "source-over";
@@ -262,7 +272,7 @@ export default function AirCanvas() {
       if (old.width && old.height) old.getContext("2d")!.drawImage(drawRef.current, 0, 0);
       drawRef.current.width = w; drawRef.current.height = h;
       overlayRef.current.width = w; overlayRef.current.height = h;
-      if (old.width && old.height) drawRef.current.getContext("2d")!.drawImage(old, 0, 0, w, h);
+      if (old.width && old.height) drawRef.current.getContext("2d", { desynchronized: true, alpha: true })!.drawImage(old, 0, 0, w, h);
       redraw();
     };
     resizeRef.current = resize;
@@ -277,46 +287,51 @@ export default function AirCanvas() {
       return null;
     };
 
+    // ============================================================
+    // DETECTION HANDLER — runs at camera FPS (~30Hz).
+    // Updates targetPosRef + state flags. Does NOT touch the DOM.
+    // The render loop below interpolates & paints at monitor refresh.
+    // ============================================================
     onResultsRef.current = (results: any) => {
       const overlay = overlayRef.current;
-      const cont = containerRef.current;
-      if (!overlay || !cont) return;
-
-      const cursor = cursorRef.current;
-      const dwellRing = dwellRingRef.current;
+      if (!overlay) return;
 
       const landmarksList = results.landmarks || results.multiHandLandmarks;
       if (!landmarksList || landmarksList.length === 0) {
-        setFingerStateThrottled("idle");
-        if (currentStrokeRef.current) { commitStroke(); }
-        if (cursor) cursor.style.opacity = "0";
-        if (dwellRing) dwellRing.style.opacity = "0";
-        hoverTargetRef.current?.removeAttribute("data-hand-hover");
-        hoverTargetRef.current = null;
-        dwellStartRef.current = 0;
-        smoothPosRef.current = null;
+        handPresentRef.current = false;
+        pointingRef.current = false;
+        indexExtRef.current = false;
         oneEuroRef.current.init = false;
+        targetPosRef.current = null;
+        targetVelRef.current = { x: 0, y: 0 };
         return;
       }
 
       const lm = landmarksList[0];
-
       const W = overlay.width;
       const H = overlay.height;
-      const rawX = (1 - lm[8].x) * W;
-      const rawY = lm[8].y * H;
 
-      // ---- One Euro Filter ----
+      // Stabilized fingertip: blend tip (8) with DIP joint (7).
+      // The DIP is structurally calmer than the tip — small weight reduces
+      // micro-jitter without dulling intent.
+      const tipX = (1 - lm[8].x) * W;
+      const tipY = lm[8].y * H;
+      const dipX = (1 - lm[7].x) * W;
+      const dipY = lm[7].y * H;
+      const rawX = tipX * 0.82 + dipX * 0.18;
+      const rawY = tipY * 0.82 + dipY * 0.18;
+
+      // ---- One Euro Filter (tuned: snappier minCutoff, stronger speed beta) ----
       const oe = oneEuroRef.current;
       const now = performance.now();
-      let sx = rawX, sy = rawY;
+      let sx = rawX, sy = rawY, dx = 0, dy = 0;
       if (!oe.init) {
         oe.xPrev = rawX; oe.yPrev = rawY;
         oe.dxPrev = 0; oe.dyPrev = 0;
         oe.tPrev = now; oe.init = true;
       } else {
         const dt = Math.max(1, now - oe.tPrev) / 1000;
-        const minCutoff = 1.2, beta = 0.05, dCutoff = 1.0;
+        const minCutoff = 1.7, beta = 0.012, dCutoff = 1.0;
         const alpha = (cutoff: number) => {
           const r = 2 * Math.PI * cutoff * dt;
           return r / (r + 1);
@@ -324,102 +339,152 @@ export default function AirCanvas() {
         const dxRaw = (rawX - oe.xPrev) / dt;
         const dyRaw = (rawY - oe.yPrev) / dt;
         const ad = alpha(dCutoff);
-        const dx = oe.dxPrev + ad * (dxRaw - oe.dxPrev);
-        const dy = oe.dyPrev + ad * (dyRaw - oe.dyPrev);
-        const cutoffX = minCutoff + beta * Math.abs(dx);
-        const cutoffY = minCutoff + beta * Math.abs(dy);
-        const ax = alpha(cutoffX), ay = alpha(cutoffY);
-        sx = oe.xPrev + ax * (rawX - oe.xPrev);
-        sy = oe.yPrev + ay * (rawY - oe.yPrev);
+        dx = oe.dxPrev + ad * (dxRaw - oe.dxPrev);
+        dy = oe.dyPrev + ad * (dyRaw - oe.dyPrev);
+        const speed = Math.hypot(dx, dy);
+        const cutoff = minCutoff + beta * speed;
+        const a = alpha(cutoff);
+        sx = oe.xPrev + a * (rawX - oe.xPrev);
+        sy = oe.yPrev + a * (rawY - oe.yPrev);
         oe.xPrev = sx; oe.yPrev = sy;
         oe.dxPrev = dx; oe.dyPrev = dy;
         oe.tPrev = now;
       }
-      const smoothed: Pt = { x: sx, y: sy };
-      smoothPosRef.current = smoothed;
 
-      // Finger-extension test: tip is higher (smaller y) than the PIP joint.
+      targetPosRef.current = { x: sx, y: sy };
+      targetVelRef.current = { x: dx, y: dy };
+      handPresentRef.current = true;
+
+      // Finger-extension test: tip higher (smaller y) than PIP joint.
       const isExtended = (tipIdx: number, pipIdx: number) =>
         lm[tipIdx].y < lm[pipIdx].y - 0.015;
       const indexExtended = isExtended(8, 6);
       const middleExtended = isExtended(12, 10);
       const ringExtended = isExtended(16, 14);
       const pinkyExtended = isExtended(20, 18);
-      const pointing =
+      indexExtRef.current = indexExtended;
+      pointingRef.current =
         indexExtended && !middleExtended && !ringExtended && !pinkyExtended;
+    };
+
+    // ============================================================
+    // RENDER LOOP — runs at monitor refresh (60-120Hz).
+    // Lerps displayPos toward targetPos, drives cursor, dwell-click,
+    // and ink emission. Decouples paint smoothness from camera FPS.
+    // ============================================================
+    let stoppedRender = false;
+    const renderLoop = () => {
+      if (stoppedRender) return;
+      requestAnimationFrame(renderLoop);
+
+      const cursor = cursorRef.current;
+      const dwellRing = dwellRingRef.current;
+      const cont = containerRef.current;
+      if (!cont) return;
+
+      const present = handPresentRef.current;
+      const target = targetPosRef.current;
+
+      if (!present || !target) {
+        if (currentStrokeRef.current) commitStroke();
+        if (cursor) cursor.style.opacity = "0";
+        if (dwellRing) dwellRing.style.opacity = "0";
+        hoverTargetRef.current?.removeAttribute("data-hand-hover");
+        hoverTargetRef.current = null;
+        dwellStartRef.current = 0;
+        displayPosRef.current = null;
+        if (fingerStateRef.current !== "idle") setFingerStateThrottled("idle");
+        return;
+      }
+
+      // Critically-damped lerp toward target with tiny forward prediction.
+      // High lerp factor → cursor catches up within ~2 frames of detection.
+      const prediction = 0.012; // seconds — compensates ~1 frame of detection lag
+      const tgtX = target.x + targetVelRef.current.x * prediction;
+      const tgtY = target.y + targetVelRef.current.y * prediction;
+      const cur = displayPosRef.current ?? { x: tgtX, y: tgtY };
+      const lerp = 0.45;
+      const dispX = cur.x + (tgtX - cur.x) * lerp;
+      const dispY = cur.y + (tgtY - cur.y) * lerp;
+      displayPosRef.current = { x: dispX, y: dispY };
 
       const rect = cont.getBoundingClientRect();
-      const vx = smoothed.x + rect.left;
-      const vy = smoothed.y + rect.top;
+      const vx = dispX + rect.left;
+      const vy = dispY + rect.top;
+      const now = performance.now();
 
-      const target = findHandTarget(vx, vy);
+      const hovered = findHandTarget(vx, vy);
       const prev = hoverTargetRef.current;
-      if (target !== prev) {
+      if (hovered !== prev) {
         prev?.removeAttribute("data-hand-hover");
-        target?.setAttribute("data-hand-hover", "true");
-        hoverTargetRef.current = target;
-        dwellStartRef.current = target ? now : 0;
+        hovered?.setAttribute("data-hand-hover", "true");
+        hoverTargetRef.current = hovered;
+        dwellStartRef.current = hovered ? now : 0;
       }
 
       const DWELL_MS = 600;
-
-      if (target) {
+      if (hovered) {
         const elapsed = now - dwellStartRef.current;
         if (dwellRing) {
           dwellRing.style.opacity = "1";
-          const pct = Math.min(1, elapsed / DWELL_MS);
+          const pct = Math.max(0, Math.min(1, elapsed / DWELL_MS));
           dwellRing.style.background = `conic-gradient(${PRIMARY} ${pct * 360}deg, rgba(0,0,0,0.15) 0deg)`;
         }
         if (elapsed >= DWELL_MS && now - lastClickAtRef.current > 800) {
-          target.click();
+          hovered.click();
           lastClickAtRef.current = now;
           dwellStartRef.current = now + 400;
         }
-      } else {
-        if (dwellRing) dwellRing.style.opacity = "0";
+      } else if (dwellRing) {
+        dwellRing.style.opacity = "0";
       }
 
-      const isDrawing = !target && drawingEnabledRef.current && pointing;
+      const isDrawing =
+        !hovered && drawingEnabledRef.current && pointingRef.current;
 
       if (isDrawing) {
         setFingerStateThrottled("drawing");
+        const pt = { x: dispX, y: dispY };
         if (!currentStrokeRef.current) {
           currentStrokeRef.current = {
-            points: [smoothed],
+            points: [pt],
             color: colorRef.current,
             size: toolRef.current === "eraser" ? sizeRef.current * 3 : sizeRef.current,
             tool: toolRef.current,
           };
-          lastEmitRef.current = smoothed;
+          lastEmitRef.current = pt;
           drawIncrement();
         } else {
           const last = lastEmitRef.current!;
-          if (Math.hypot(last.x - smoothed.x, last.y - smoothed.y) > 1.2) {
-            currentStrokeRef.current.points.push(smoothed);
-            lastEmitRef.current = smoothed;
+          if (Math.hypot(last.x - pt.x, last.y - pt.y) > 0.9) {
+            currentStrokeRef.current.points.push(pt);
+            lastEmitRef.current = pt;
             drawIncrement();
           }
         }
       } else {
-        setFingerStateThrottled(target ? "hover" : indexExtended ? "hover" : "idle");
-        if (currentStrokeRef.current) { commitStroke(); }
+        setFingerStateThrottled(hovered || indexExtRef.current ? "hover" : "idle");
+        if (currentStrokeRef.current) commitStroke();
       }
-
 
       if (cursor) {
         cursor.style.opacity = "1";
         cursor.style.transform = `translate3d(${vx}px, ${vy}px, 0) translate(-50%, -50%)`;
-        const mode = target ? "hand" : toolRef.current === "eraser" ? "eraser" : "pen";
+        const mode = hovered ? "hand" : toolRef.current === "eraser" ? "eraser" : "pen";
         if (cursor.dataset.mode !== mode) cursor.dataset.mode = mode;
-        const tint = target ? PRIMARY : toolRef.current === "eraser" ? "#111111" : colorRef.current;
+        const tint = hovered ? PRIMARY : toolRef.current === "eraser" ? "#111111" : colorRef.current;
         cursor.style.setProperty("--cursor-tint", tint);
-        cursor.dataset.pinch = isDrawing ? "1" : "0";
-        cursor.dataset.drawing = isDrawing ? "1" : "0";
+        const drawAttr = isDrawing ? "1" : "0";
+        if (cursor.dataset.drawing !== drawAttr) {
+          cursor.dataset.drawing = drawAttr;
+          cursor.dataset.pinch = drawAttr;
+        }
       }
       if (dwellRing) {
         dwellRing.style.transform = `translate3d(${vx}px, ${vy}px, 0) translate(-50%, -50%)`;
       }
     };
+    requestAnimationFrame(renderLoop);
 
     resize();
     window.addEventListener("resize", onResize);
@@ -434,13 +499,13 @@ export default function AirCanvas() {
     } catch {}
     setStatus("Click “Enable Camera” to begin");
 
-
     return () => {
+      stoppedRender = true;
       window.removeEventListener("resize", onResize);
       cleanupRef.current?.();
       cleanupRef.current = null;
     };
-  }, [redraw, commitStroke]);
+  }, [redraw, commitStroke, setFingerStateThrottled]);
 
   // Triggered by an explicit user click — required for camera permission.
   const startCamera = useCallback(async () => {
