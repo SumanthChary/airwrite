@@ -552,24 +552,35 @@ export default function AirCanvas() {
         });
       }
 
-      // Drive frames ourselves — detectForVideo is synchronous & fast.
+      // Drive frames from rVFC when available — fires exactly once per new video frame,
+      // no wasted inference on duplicate frames. Falls back to rAF.
       let stopped = false;
-      let lastTs = -1;
-      const loop = () => {
-        if (stopped) return;
-        if (video.readyState >= 2) {
-          const ts = performance.now();
-          if (ts !== lastTs) {
-            lastTs = ts;
-            try {
-              const res = landmarker.detectForVideo(video, ts);
-              onResultsRef.current(res);
-            } catch {}
-          }
-        }
-        requestAnimationFrame(loop);
+      const runDetect = (tsMs: number) => {
+        try {
+          const res = landmarker.detectForVideo(video, tsMs);
+          onResultsRef.current(res);
+        } catch {}
       };
-      requestAnimationFrame(loop);
+      const vAny = video as any;
+      if (typeof vAny.requestVideoFrameCallback === "function") {
+        const onFrame = (_now: number, meta: any) => {
+          if (stopped) return;
+          runDetect(meta.mediaTime ? meta.mediaTime * 1000 : performance.now());
+          vAny.requestVideoFrameCallback(onFrame);
+        };
+        vAny.requestVideoFrameCallback(onFrame);
+      } else {
+        let lastTs = -1;
+        const loop = () => {
+          if (stopped) return;
+          if (video.readyState >= 2) {
+            const ts = video.currentTime * 1000;
+            if (ts !== lastTs) { lastTs = ts; runDetect(ts); }
+          }
+          requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+      }
 
       cleanupRef.current = () => {
         stopped = true;
