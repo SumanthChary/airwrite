@@ -515,8 +515,13 @@ export default function AirCanvas() {
     setStatus("Requesting camera…");
     try {
       // Prime the permission prompt directly from the user gesture.
+      // Lower res = dramatically faster inference. 640x360 is plenty for landmark accuracy.
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        video: {
+          width: { ideal: 640 }, height: { ideal: 360 },
+          frameRate: { ideal: 60, max: 60 },
+          facingMode: "user",
+        },
         audio: false,
       });
       const video = videoRef.current!;
