@@ -415,12 +415,18 @@ export default function AirCanvas() {
       const dispY = cur.y + (tgtY - cur.y) * lerp;
       displayPosRef.current = { x: dispX, y: dispY };
 
-      const rect = cont.getBoundingClientRect();
+      const rect = cachedRect ?? cont.getBoundingClientRect();
       const vx = dispX + rect.left;
       const vy = dispY + rect.top;
       const now = performance.now();
 
-      const hovered = findHandTarget(vx, vy);
+      // Hit-test is expensive (forces layout). Only run every ~50ms,
+      // or immediately when not currently drawing (so first hover lands fast).
+      let hovered = hoverTargetRef.current;
+      if (!currentStrokeRef.current || now - (hitTestAtRef.current || 0) > 50) {
+        hovered = findHandTarget(vx, vy);
+        hitTestAtRef.current = now;
+      }
       const prev = hoverTargetRef.current;
       if (hovered !== prev) {
         prev?.removeAttribute("data-hand-hover");
